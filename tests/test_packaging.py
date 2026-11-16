@@ -123,7 +123,7 @@ def test_release_download_verifies_checksum(
     download.assert_called_once()
     request = download.call_args.args[0]
     assert request.full_url == (
-        "https://github.com/denismaciel/lint-it/releases/download/v1.2.3/"
+        "https://github.com/denismaciel/leesh/releases/download/v1.2.3/"
         "leesh-rust-x86_64-unknown-linux-musl"
     )
     assert download.call_args.kwargs == {"timeout": 120}
@@ -271,8 +271,8 @@ def native_run_info():
         ("event", "pull_request"),
         ("head_branch", "topic"),
         ("path", ".github/workflows/ci.yml"),
-        ("repository", {"full_name": "fork/lint-it"}),
-        ("head_repository", {"full_name": "fork/lint-it"}),
+        ("repository", {"full_name": "fork/leesh"}),
+        ("head_repository", {"full_name": "fork/leesh"}),
         ("head_sha", "bad"),
     ],
 )

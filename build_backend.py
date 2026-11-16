@@ -61,7 +61,7 @@ def bundle_binary(root: Path, version: str, target: str) -> Path:
             raise RuntimeError("Native artifact manifest does not match the Python package version")
         asset = f"leesh-rust-{target}{suffix}"
         expected = manifest["sha256"][asset]
-        url = f"https://github.com/denismaciel/lint-it/releases/download/v{version}/{asset}"
+        url = f"https://github.com/denismaciel/leesh/releases/download/v{version}/{asset}"
         request = urllib.request.Request(url, headers={"User-Agent": "leesh-python-build"})
         with urllib.request.urlopen(request, timeout=120) as response:
             data = response.read()

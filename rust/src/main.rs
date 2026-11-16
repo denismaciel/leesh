@@ -342,7 +342,7 @@ fn execute(command: Command) -> Result<u8, String> {
                         e.to_string()
                     }
                 })?;
-            file.write_all(native_newlines(format!("# leesh manifest: https://github.com/denismaciel/lint-it/blob/main/docs/configuration.md\n\n[workspace]\nkind = \"{kind}\"\nlayout = \"{layout}\"\n")).as_bytes()).map_err(|e|e.to_string())?;
+            file.write_all(native_newlines(format!("# leesh manifest: https://github.com/denismaciel/leesh/blob/main/docs/configuration.md\n\n[workspace]\nkind = \"{kind}\"\nlayout = \"{layout}\"\n")).as_bytes()).map_err(|e|e.to_string())?;
             println!("wrote {}; run `leesh check` next", path.display());
             Ok(0)
         }

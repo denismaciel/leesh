@@ -18,7 +18,7 @@ from leesh.workspace import MANIFEST as MANIFEST_NAME
 from leesh.workspace import Kind, Workspace
 
 STARTER_MANIFEST = """\
-# leesh manifest: https://github.com/denismaciel/lint-it/blob/main/docs/configuration.md
+# leesh manifest: https://github.com/denismaciel/leesh/blob/main/docs/configuration.md
 
 [workspace]
 kind = "{kind}"

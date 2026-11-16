@@ -83,7 +83,7 @@ its release. Published assets remain available independently of Actions retentio
 
 ## PyPI publication security
 
-The `leesh` PyPI trusted publisher is bound to `denismaciel/lint-it`, `release.yml`, and
+The `leesh` PyPI trusted publisher is bound to `denismaciel/leesh`, `release.yml`, and
 GitHub environment `pypi`. That environment accepts only `v*` tags and requires
 Denis's approval; administrative approval bypass is disabled. Repository rules
 restrict tag creation to admins and prohibit updating or deleting release tags.

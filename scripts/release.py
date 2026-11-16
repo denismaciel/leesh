@@ -20,7 +20,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = "denismaciel/lint-it"
+REPO = "denismaciel/leesh"
 TARGETS = {
     "x86_64-unknown-linux-musl": "manylinux_2_28_x86_64.musllinux_1_2_x86_64",
     "aarch64-unknown-linux-musl": "manylinux_2_28_aarch64.musllinux_1_2_aarch64",

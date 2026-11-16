@@ -20,9 +20,9 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/denismaciel/lint-it"
-Issues = "https://github.com/denismaciel/lint-it/issues"
-Changelog = "https://github.com/denismaciel/lint-it/blob/main/CHANGELOG.md"
+Repository = "https://github.com/denismaciel/leesh"
+Issues = "https://github.com/denismaciel/leesh/issues"
+Changelog = "https://github.com/denismaciel/leesh/blob/main/CHANGELOG.md"
 
 [project.scripts]
 leesh = "leesh._native:main"
