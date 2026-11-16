@@ -1,6 +1,6 @@
 [project]
-name = "lint-it"
-version = "0.20.1"
+name = "leesh"
+version = "0.20.2"
 description = "Strict architecture linting for Python functional cores and imperative shells"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -25,23 +25,25 @@ Issues = "https://github.com/denismaciel/lint-it/issues"
 Changelog = "https://github.com/denismaciel/lint-it/blob/main/CHANGELOG.md"
 
 [project.scripts]
+leesh = "lint_it._native:main"
 lint-it = "lint_it._native:main"
 
 [build-system]
-requires = ["hatchling>=1.27,<2"]
-build-backend = "hatchling.build"
+requires = ["uv_build==0.12.4"]
+build-backend = "build_backend"
+backend-path = ["."]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/lint_it"]
+[tool.uv]
+required-version = "==0.12.4"
+cache-keys = [{ file = "pyproject.toml" }, { file = "build_backend.py" }, { file = "native-artifacts.json" }, { file = "rust/target/release/lint-it-rust" }, { env = "LINT_IT_NATIVE_BINARY" }, { env = "LINT_IT_NATIVE_TARGET" }]
 
-[tool.hatch.build.targets.wheel.hooks.custom]
-
-[tool.hatch.build.targets.sdist]
-include = ["src/", "rust/src/", "rust/Cargo.toml", "rust/Cargo.lock", "rust/README.md", "rust/LICENSE*", "tests/", "docs/", "benchmarks/", "hatch_build.py", "native-artifacts.json", "THIRD_PARTY_NOTICES.txt", "scripts/", "pyproject.toml", "README.md", "LICENSE", "CHANGELOG.md", "lint-it.toml", "uv.lock", ".pre-commit-hooks.yaml"]
-exclude = ["src/lint_it/_bin/", "benchmarks/target/"]
+[tool.uv.build-backend]
+module-name = "lint_it"
+source-include = ["build_backend.py", "rust-toolchain.toml", "rust/src/**", "rust/Cargo.toml", "rust/Cargo.lock", "rust/README.md", "rust/LICENSE*", "tests/**", "docs/**", "benchmarks/**", "native-artifacts.json", "scripts/**", "CHANGELOG.md", "lint-it.toml", "uv.lock", ".pre-commit-hooks.yaml"]
+source-exclude = ["_bin/**", "**/target/**", "**/__pycache__/**"]
 
 [dependency-groups]
-dev = ["hatchling>=1.27,<2", "pytest>=9,<10", "ruff>=0.16,<1", "ty>=0.0.70"]
+dev = ["uv_build==0.12.4", "pytest>=9,<10", "ruff>=0.16,<1", "ty>=0.0.70"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

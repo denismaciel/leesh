@@ -8,6 +8,7 @@ permissions:
 
 jobs:
   binary:
+    if: github.ref == 'refs/heads/main' && github.repository == 'denismaciel/lint-it'
     strategy:
       fail-fast: false
       matrix:
@@ -26,13 +27,17 @@ jobs:
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
     env:
+      UV_NO_CACHE: "1"
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_target }}
       CFLAGS: "-O2 -std=gnu11"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
         with:
           version: "0.12.4"
+          enable-cache: false
           python-version: "3.12"
       - name: Install Rust
         shell: bash
@@ -73,14 +78,17 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then suffix=".exe"; fi
           export LINT_IT_NATIVE_BINARY="$PWD/rust/target/$TARGET/release/lint-it-rust$suffix"
           if [ "$RUNNER_OS" = "Windows" ]; then
-            export LINT_IT_NATIVE_BINARY="$(cygpath -m "$LINT_IT_NATIVE_BINARY")"
+            LINT_IT_NATIVE_BINARY="$(cygpath -m "$LINT_IT_NATIVE_BINARY")"
+            export LINT_IT_NATIVE_BINARY
           fi
           export LINT_IT_RUST_BINARY="$LINT_IT_NATIVE_BINARY"
           uv sync --locked
           uv run pytest tests/test_native.py tests/test_launcher.py tests/test_packaging.py
           uv build --wheel --out-dir native-artifacts
-          uv run --isolated --no-project --with native-artifacts/*.whl lint-it rules
-          uv run --isolated --no-project --with native-artifacts/*.whl python -m lint_it rules
+          uv run --isolated --no-project --with native-artifacts/leesh-*.whl leesh rules
+          uv run --isolated --no-project --with native-artifacts/leesh-*.whl lint-it rules
+          uv run --isolated --no-project --with native-artifacts/leesh-*.whl leesh --help | grep -F "Usage: leesh"
+          uv run --isolated --no-project --with native-artifacts/leesh-*.whl python -m lint_it rules
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: native-${{ matrix.target }}

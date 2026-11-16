@@ -6,9 +6,14 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
+
+env:
+  UV_NO_CACHE: "1"
+  CARGO_BUILD_JOBS: "2"
 
 jobs:
   test:
@@ -22,18 +27,19 @@ jobs:
         python: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.12.4"
+          enable-cache: false
           python-version: ${{ matrix.python }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: ci-native
           path: rust/target/release
       - run: chmod +x rust/target/release/lint-it-rust
-      - run: uv sync --locked
-      - run: uv run pytest
-      - run: uv run lint-it check
+      - run: make test
 
   check:
     needs: rust
@@ -42,24 +48,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.12.4"
+          enable-cache: false
           python-version: "3.14"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: ci-native
           path: rust/target/release
       - run: chmod +x rust/target/release/lint-it-rust
-      - run: uv sync --locked
-      - run: uv run ruff format --check .
-      - run: uv run ruff check .
-      - run: uv run ty check
-      - run: uv build
+      - run: make check build release-check
       - name: Smoke test the built wheel
         run: |
-          uv run --isolated --no-project --with dist/lint_it-*.whl lint-it check --format github
-          uv run --isolated --no-project --with dist/lint_it-*.whl lint-it rules
+          uv run --isolated --no-project --with dist/leesh-*.whl leesh check --format github
+          uv run --isolated --no-project --with dist/leesh-*.whl leesh rules
 
   rust:
     env:
@@ -67,19 +72,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.12.4"
+          enable-cache: false
           python-version: "3.14"
-      - run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt,clippy
+      - run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt,clippy --target x86_64-unknown-linux-musl
       - run: cargo +1.99.0 fmt --manifest-path rust/Cargo.toml --check
       - run: cargo +1.99.0 clippy --locked --release --manifest-path rust/Cargo.toml --all-targets -- -D warnings
       - run: cargo +1.99.0 test --locked --release --manifest-path rust/Cargo.toml
       - run: cargo +1.99.0 build --locked --release --manifest-path rust/Cargo.toml
+      - name: Build portable executable for Python distributions
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          CC=musl-gcc CFLAGS="-O2 -std=gnu11" cargo +1.99.0 build --locked --release --manifest-path rust/Cargo.toml --target x86_64-unknown-linux-musl
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ci-native
-          path: rust/target/release/lint-it-rust
+          path: rust/target/x86_64-unknown-linux-musl/release/lint-it-rust
       - run: uv sync --locked
       - run: uv run python -m pytest -p benchmarks.differential_plugin
       - name: Compare pinned Python projects

@@ -75,7 +75,7 @@ def test_missing_binary_is_actionable(
     assert output.out == ""
     assert "bundled executable missing" in output.err
     assert str(missing) in output.err
-    assert "Reinstall lint-it" in output.err
+    assert "Reinstall leesh" in output.err
     run.assert_not_called()
 
 

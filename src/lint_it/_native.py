@@ -19,8 +19,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     binary = _binary_path()
     if not binary.is_file():
         print(
-            f"lint-it: bundled executable missing: {binary}. "
-            "Reinstall lint-it from the same pinned Git tag with your Python package manager.",
+            f"leesh: bundled executable missing: {binary}. "
+            "Reinstall leesh at the same version or Git tag with your Python package manager.",
             file=sys.stderr,
         )
         return 2
@@ -31,5 +31,5 @@ def main(argv: Sequence[str] | None = None) -> int:
             os.execv(str(binary), command)
         return subprocess.run(command, check=False).returncode
     except OSError as error:
-        print(f"lint-it: cannot launch bundled executable {binary}: {error}", file=sys.stderr)
+        print(f"leesh: cannot launch bundled executable {binary}: {error}", file=sys.stderr)
         return 2

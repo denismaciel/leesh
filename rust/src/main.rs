@@ -15,7 +15,8 @@ use std::{
 };
 #[derive(Parser)]
 #[command(
-    name = "lint-it",
+    name = "leesh",
+    bin_name = "leesh",
     about = "Architecture rules for functional-core Python workspaces."
 )]
 struct Cli {

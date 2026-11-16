@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/icon.svg" width="96" height="96" alt=""></p>
 
-# lint-it
+# Leesh
 
 **A leash for LLM-written Python.**
 
@@ -8,7 +8,7 @@
 
 Python written by LLMs sucks.
 
-lint-it is the remedy for that. It's based on a handful of good ideas:
+Leesh is the remedy for that. It's based on a handful of good ideas:
 
 - [Functional Core, Imperative Shell](https://www.destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell).
 - [Parse, don't validate](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/).
@@ -36,12 +36,25 @@ laundered through a re-export.
 
 ## Install
 
-lint-it is distributed as a Python package from GitHub, not PyPI. The CLI runs
-a bundled Rust executable; clients do not need Cargo or a Rust toolchain.
-Pin a release tag (currently `v0.20.1`):
+Install Leesh from PyPI. The CLI runs a bundled Rust executable; clients do not
+need Cargo or a Rust toolchain.
 
 ```bash
-uv add --dev 'lint-it @ git+https://github.com/denismaciel/lint-it.git@v0.20.1'
+uv tool install leesh
+leesh check
+```
+
+Run it without installing a persistent tool:
+
+```bash
+uvx leesh check
+```
+
+For a project's development dependencies, use `uv add --dev leesh` and
+`uv run leesh check`. To pin the Git source instead:
+
+```bash
+uv add --dev 'leesh @ git+https://github.com/denismaciel/lint-it.git@v0.20.2'
 ```
 
 Or run it with pre-commit:
@@ -49,9 +62,9 @@ Or run it with pre-commit:
 ```yaml
 repos:
   - repo: https://github.com/denismaciel/lint-it
-    rev: v0.20.1
+    rev: v0.20.2
     hooks:
-      - id: lint-it
+      - id: leesh
 ```
 
 Git and source-distribution installs download the matching executable from that
@@ -60,17 +73,21 @@ wheels are also attached to the release. Supported platforms: Linux x86-64 and
 ARM64 (including musl), macOS Intel (10.13+) and Apple Silicon (11+), and Windows
 x86-64. Python 3.12+ remains required.
 
+The `lint-it` command remains an alias. Existing `lint-it.toml` files, the
+`lint_it` Python import, Git repository URLs, and native release asset names stay
+compatible.
+
 ## Use
 
 ```bash
-lint-it init --layout domains   # write a starter lint-it.toml
-lint-it check                   # check the whole workspace
-lint-it check src/app/orders    # report findings under these paths only
-lint-it report                  # rank findings by rule, layer edge, target and area
-lint-it baseline                # record current findings so only new ones fail
-lint-it classify src            # show each file's layer and the pattern that matched
-lint-it explain LIT101          # show a rule's documentation
-lint-it rules                   # list every rule
+leesh init --layout domains   # write a starter lint-it.toml
+leesh check                   # check the whole workspace
+leesh check src/app/orders    # report findings under these paths only
+leesh report                  # rank findings by rule, layer edge, target and area
+leesh baseline                # record current findings so only new ones fail
+leesh classify src            # show each file's layer and the pattern that matched
+leesh explain LIT101          # show a rule's documentation
+leesh rules                   # list every rule
 ```
 
 `check` finds the workspace root from the nearest `lint-it.toml` (or
@@ -81,20 +98,20 @@ imports are followed across files and packages. Output formats are `text`,
 annotations). Exit status is 0 when clean, 1 when there are findings, and 2 for
 usage errors or a manifest that cannot be loaded. Files are analyzed with native worker threads; `--jobs 1` uses one worker.
 
-### Adopting lint-it on an existing codebase
+### Adopting Leesh on an existing codebase
 
 Describe the code you have instead of moving it first: a custom layout maps
 today's directories to layers, and custom layers name the roles that don't fit
 the built-in ones (a Temporal workflow is a deterministic router). Then:
 
-1. `lint-it report` shows which rules, layer edges and imported modules produce
+1. `leesh report` shows which rules, layer edges and imported modules produce
    the findings, so you can tell policy questions from real debt.
 2. Settle policy in the manifest: `[[allowed_dependencies]]` for modules that
    act as ports, `[[ignore]]` for a rule you are not adopting yet in a given
    place, `[conventions]` for your framework bases. Each needs a reason.
-3. Set `workspace.baseline` and run `lint-it baseline`. `check` now fails only
+3. Set `workspace.baseline` and run `leesh baseline`. `check` now fails only
    on new findings, and on baseline entries that no longer match until you run
-   `lint-it baseline --prune`, so the baseline can only shrink.
+   `leesh baseline --prune`, so the baseline can only shrink.
 
 ## Layers
 
@@ -134,7 +151,7 @@ cargo build --locked --release --manifest-path rust/Cargo.toml
 rust/target/release/lint-it-rust check
 ```
 
-It reuses Ruff's parser, parallelizes analysis, and preserves lint-it's rules and
+It reuses Ruff's parser, parallelizes analysis, and preserves Leesh's rules and
 CLI commands. See [build and verification instructions](rust/README.md) and the
 [Python/Rust performance comparison](benchmarks/README.md).
 
@@ -142,13 +159,14 @@ CLI commands. See [build and verification instructions](rust/README.md) and the
 
 ```bash
 cargo build --locked --release --manifest-path rust/Cargo.toml
-LINT_IT_NATIVE_BINARY="$PWD/rust/target/release/lint-it-rust" uv sync
-uv run pytest
-uv run ruff format --check . && uv run ruff check .
-uv run ty check
-uv run lint-it check                                  # lint-it checks itself
-uv run lint-it rules --format markdown > docs/rules.md  # after changing a rule docstring
+export LINT_IT_NATIVE_BINARY="$PWD/rust/target/release/lint-it-rust"
+make dev check test
+make build release-check
+uv run leesh rules --format markdown > docs/rules.md  # after changing a rule docstring
 ```
+
+Python packaging uses uv and uv_build with a small native-artifact adapter.
+See [release instructions](docs/releasing.md) for preparation and tagged releases.
 
 A rule is a class with a `code`, a `name`, a docstring (its documentation) and
 `check(file: SourceFile)`. Register it in `src/lint_it/rules/registry.py`.

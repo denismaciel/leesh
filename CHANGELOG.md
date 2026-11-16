@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.20.2
+
+- Publish as **Leesh** on PyPI, with `leesh` as the primary command and
+  `lint-it` retained as an alias. Existing configuration and Python imports work.
+- Build Python distributions with uv and uv_build; remove Hatch.
+- Ship verified static Linux binaries in manylinux/musllinux wheels.
+- Publish tested release artifacts with protected GitHub Actions Trusted
+  Publishing, short-lived credentials, and PyPI attestations.
+
 ## 0.20.1
 
 ### Fixes
