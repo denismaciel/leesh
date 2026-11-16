@@ -19,7 +19,7 @@ jobs:
   test:
     needs: rust
     env:
-      LINT_IT_NATIVE_BINARY: ${{ github.workspace }}/rust/target/release/lint-it-rust
+      LEESH_NATIVE_BINARY: ${{ github.workspace }}/rust/target/release/leesh-rust
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -38,13 +38,13 @@ jobs:
         with:
           name: ci-native
           path: rust/target/release
-      - run: chmod +x rust/target/release/lint-it-rust
+      - run: chmod +x rust/target/release/leesh-rust
       - run: make test
 
   check:
     needs: rust
     env:
-      LINT_IT_NATIVE_BINARY: ${{ github.workspace }}/rust/target/release/lint-it-rust
+      LEESH_NATIVE_BINARY: ${{ github.workspace }}/rust/target/release/leesh-rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,7 +59,7 @@ jobs:
         with:
           name: ci-native
           path: rust/target/release
-      - run: chmod +x rust/target/release/lint-it-rust
+      - run: chmod +x rust/target/release/leesh-rust
       - run: make check build release-check
       - name: Smoke test the built wheel
         run: |
@@ -68,7 +68,7 @@ jobs:
 
   rust:
     env:
-      LINT_IT_NATIVE_BINARY: ${{ github.workspace }}/rust/target/release/lint-it-rust
+      LEESH_NATIVE_BINARY: ${{ github.workspace }}/rust/target/release/leesh-rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -91,7 +91,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ci-native
-          path: rust/target/x86_64-unknown-linux-musl/release/lint-it-rust
+          path: rust/target/x86_64-unknown-linux-musl/release/leesh-rust
       - run: uv sync --locked
       - run: uv run python -m pytest -p benchmarks.differential_plugin
       - name: Compare pinned Python projects

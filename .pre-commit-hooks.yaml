@@ -6,12 +6,3 @@
   types: [python]
   pass_filenames: false
   require_serial: true
-
-- id: lint-it
-  name: lint-it
-  description: Check Python architecture rules for the whole workspace.
-  entry: lint-it check
-  language: python
-  types: [python]
-  pass_filenames: false
-  require_serial: true

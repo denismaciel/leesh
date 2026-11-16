@@ -1,11 +1,11 @@
 # Configuration
 
-lint-it reads `lint-it.toml` at the workspace root. Without one it uses the
+leesh reads `leesh.toml` at the workspace root. Without one it uses the
 defaults: every package is a `server` with the `domains` layout. Every section
 is optional, and unknown keys are errors.
 
-A manifest that cannot be loaded is reported as `LIT003` at `lint-it.toml:1`
-and `lint-it check` exits with status 2. Entries that load but no longer match
+A manifest that cannot be loaded is reported as `LIT003` at `leesh.toml:1`
+and `leesh check` exits with status 2. Entries that load but no longer match
 the workspace (stale or overlapping overrides, exceeded budgets, unused ignores,
 allowances that match no module, stale baseline entries) are ordinary `LIT003`
 findings.
@@ -20,7 +20,7 @@ override_budget = 0        # files that may use [[overrides]]
 dependency_override_budget = 0
 effectful_types = ["example.clock.Clock"]          # extends LIT207's catalog
 clock_modules = ["example.integrations.clock"]     # may read wall time (LIT201)
-baseline = "lint-it-baseline.json"                 # known findings; see Adoption
+baseline = "leesh-baseline.json"                 # known findings; see Adoption
 
 [[packages]]
 path = "packages/sdk"      # a directory with a pyproject.toml
@@ -49,7 +49,7 @@ glob wins. Globs are matched against the path relative to the package root:
 
 Built-in layouts: `domains`, `hexagonal`, `flat`, `boundary` (every source file
 is a boundary) and `test-support` (every source file is test code). Run
-`lint-it classify` to see which glob matched each file.
+`leesh classify` to see which glob matched each file.
 
 In `domains` and `flat`, a conventional module can grow into a package of the
 same name without a manifest change: `domains/orders/core/pricing.py` is core
@@ -116,7 +116,7 @@ Until the manifest names it, a custom layer takes its base layer's entry in
 `[layer_dependencies]`, `[forbidden_imports]` and `[forbidden_calls]`, and
 `[extend_forbidden_imports]` applies to it as to any layer. When imported, it
 counts as its base layer: a layer that may import routers may import
-workflows. `lint-it classify` shows it as `workflow (a router)`.
+workflows. `leesh classify` shows it as `workflow (a router)`.
 
 ## Policy
 
@@ -153,7 +153,7 @@ outcome_suffixes = ["NotFound", "Denied"]
 extend_allowed_bases = ["ast.NodeVisitor", "fastapi.HTTPException"]
 ```
 
-The defaults are in [`src/lint_it/policy.py`](../src/lint_it/policy.py).
+The defaults are in [`src/leesh/policy.py`](../src/leesh/policy.py).
 
 Workspace modules that a layer may always import, whatever their own layer,
 are declared with a reason. Omit `layers` to allow every importer; a trailing
@@ -224,7 +224,7 @@ issue = "EX-124"
 
 ## Adoption
 
-Two tools let an existing codebase adopt lint-it before it is clean.
+Two tools let an existing codebase adopt leesh before it is clean.
 
 `[[ignore]]` switches rules off where you have decided not to apply them yet.
 Each entry names rules by code or name, optionally limited to path globs
@@ -245,10 +245,10 @@ reason = "Legacy billing is replaced in EX-200"
 ```
 
 A baseline records the findings you already have. Set `workspace.baseline`,
-then run `lint-it baseline` to write it: a JSON file keyed by file, rule and
-message (not line), one entry per line, safe to commit. `lint-it check` then
+then run `leesh baseline` to write it: a JSON file keyed by file, rule and
+message (not line), one entry per line, safe to commit. `leesh check` then
 reports only findings beyond it, and a `LIT003` finding when entries no longer
-match, until `lint-it baseline --prune` drops them. `--prune` never adds
-entries, so the baseline only shrinks; `lint-it check --no-baseline` shows
-everything. `lint-it report` ranks the findings, new and baselined, by rule,
+match, until `leesh baseline --prune` drops them. `--prune` never adds
+entries, so the baseline only shrinks; `leesh check --no-baseline` shows
+everything. `leesh report` ranks the findings, new and baselined, by rule,
 layer edge, target and directory; `--rule LIT101` focuses it on one rule.

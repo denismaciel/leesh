@@ -1,6 +1,6 @@
 [project]
 name = "leesh"
-version = "0.20.2"
+version = "0.21.0"
 description = "Strict architecture linting for Python functional cores and imperative shells"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -25,8 +25,7 @@ Issues = "https://github.com/denismaciel/lint-it/issues"
 Changelog = "https://github.com/denismaciel/lint-it/blob/main/CHANGELOG.md"
 
 [project.scripts]
-leesh = "lint_it._native:main"
-lint-it = "lint_it._native:main"
+leesh = "leesh._native:main"
 
 [build-system]
 requires = ["uv_build==0.12.4"]
@@ -35,11 +34,11 @@ backend-path = ["."]
 
 [tool.uv]
 required-version = "==0.12.4"
-cache-keys = [{ file = "pyproject.toml" }, { file = "build_backend.py" }, { file = "native-artifacts.json" }, { file = "rust/target/release/lint-it-rust" }, { env = "LINT_IT_NATIVE_BINARY" }, { env = "LINT_IT_NATIVE_TARGET" }]
+cache-keys = [{ file = "pyproject.toml" }, { file = "build_backend.py" }, { file = "native-artifacts.json" }, { file = "rust/target/release/leesh-rust" }, { env = "LEESH_NATIVE_BINARY" }, { env = "LEESH_NATIVE_TARGET" }]
 
 [tool.uv.build-backend]
-module-name = "lint_it"
-source-include = ["build_backend.py", "rust-toolchain.toml", "rust/src/**", "rust/Cargo.toml", "rust/Cargo.lock", "rust/README.md", "rust/LICENSE*", "tests/**", "docs/**", "benchmarks/**", "native-artifacts.json", "scripts/**", "CHANGELOG.md", "lint-it.toml", "uv.lock", ".pre-commit-hooks.yaml"]
+module-name = "leesh"
+source-include = ["build_backend.py", "rust-toolchain.toml", "rust/src/**", "rust/Cargo.toml", "rust/Cargo.lock", "rust/README.md", "rust/LICENSE*", "tests/**", "docs/**", "benchmarks/**", "native-artifacts.json", "scripts/**", "CHANGELOG.md", "leesh.toml", "uv.lock", ".pre-commit-hooks.yaml"]
 source-exclude = ["_bin/**", "**/target/**", "**/__pycache__/**"]
 
 [dependency-groups]
@@ -57,4 +56,4 @@ target-version = "py312"
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["lint_it"]
+known-first-party = ["leesh"]

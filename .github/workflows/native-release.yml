@@ -65,10 +65,10 @@ jobs:
         run: |
           suffix=""
           if [ "$RUNNER_OS" = "Windows" ]; then suffix=".exe"; fi
-          binary="rust/target/$TARGET/release/lint-it-rust$suffix"
+          binary="rust/target/$TARGET/release/leesh-rust$suffix"
           "$binary" rules
           mkdir -p native-artifacts
-          cp "$binary" "native-artifacts/lint-it-rust-$TARGET$suffix"
+          cp "$binary" "native-artifacts/leesh-rust-$TARGET$suffix"
       - name: Build and test Python wheel
         shell: bash
         env:
@@ -76,19 +76,18 @@ jobs:
         run: |
           suffix=""
           if [ "$RUNNER_OS" = "Windows" ]; then suffix=".exe"; fi
-          export LINT_IT_NATIVE_BINARY="$PWD/rust/target/$TARGET/release/lint-it-rust$suffix"
+          export LEESH_NATIVE_BINARY="$PWD/rust/target/$TARGET/release/leesh-rust$suffix"
           if [ "$RUNNER_OS" = "Windows" ]; then
-            LINT_IT_NATIVE_BINARY="$(cygpath -m "$LINT_IT_NATIVE_BINARY")"
-            export LINT_IT_NATIVE_BINARY
+            LEESH_NATIVE_BINARY="$(cygpath -m "$LEESH_NATIVE_BINARY")"
+            export LEESH_NATIVE_BINARY
           fi
-          export LINT_IT_RUST_BINARY="$LINT_IT_NATIVE_BINARY"
+          export LEESH_RUST_BINARY="$LEESH_NATIVE_BINARY"
           uv sync --locked
           uv run pytest tests/test_native.py tests/test_launcher.py tests/test_packaging.py
           uv build --wheel --out-dir native-artifacts
           uv run --isolated --no-project --with native-artifacts/leesh-*.whl leesh rules
-          uv run --isolated --no-project --with native-artifacts/leesh-*.whl lint-it rules
           uv run --isolated --no-project --with native-artifacts/leesh-*.whl leesh --help | grep -F "Usage: leesh"
-          uv run --isolated --no-project --with native-artifacts/leesh-*.whl python -m lint_it rules
+          uv run --isolated --no-project --with native-artifacts/leesh-*.whl python -m leesh rules
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: native-${{ matrix.target }}

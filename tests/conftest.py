@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from lint_it import engine
-from lint_it.core import Finding
-from lint_it.loader import load_workspace
-from lint_it.rules.registry import ALL_RULES
-from lint_it.workspace import Workspace
+from leesh import engine
+from leesh.core import Finding
+from leesh.loader import load_workspace
+from leesh.rules.registry import ALL_RULES
+from leesh.workspace import Workspace
 
 
 @dataclass(frozen=True)
@@ -28,7 +28,7 @@ class Project:
         return self
 
     def manifest(self, text: str) -> Project:
-        return self.write({"lint-it.toml": text})
+        return self.write({"leesh.toml": text})
 
     def package(self, path: str, name: str) -> Project:
         return self.write({f"{path}/pyproject.toml": f'[project]\nname = "{name}"\n'})

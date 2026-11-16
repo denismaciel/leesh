@@ -54,7 +54,7 @@ For a project's development dependencies, use `uv add --dev leesh` and
 `uv run leesh check`. To pin the Git source instead:
 
 ```bash
-uv add --dev 'leesh @ git+https://github.com/denismaciel/lint-it.git@v0.20.2'
+uv add --dev 'leesh @ git+https://github.com/denismaciel/lint-it.git@v0.21.0'
 ```
 
 Or run it with pre-commit:
@@ -62,7 +62,7 @@ Or run it with pre-commit:
 ```yaml
 repos:
   - repo: https://github.com/denismaciel/lint-it
-    rev: v0.20.2
+    rev: v0.21.0
     hooks:
       - id: leesh
 ```
@@ -73,14 +73,13 @@ wheels are also attached to the release. Supported platforms: Linux x86-64 and
 ARM64 (including musl), macOS Intel (10.13+) and Apple Silicon (11+), and Windows
 x86-64. Python 3.12+ remains required.
 
-The `lint-it` command remains an alias. Existing `lint-it.toml` files, the
-`lint_it` Python import, Git repository URLs, and native release asset names stay
-compatible.
+The Python import, CLI, configuration file (`leesh.toml`), and native executable
+(`leesh-rust`) use the Leesh name. The old module and command aliases are removed.
 
 ## Use
 
 ```bash
-leesh init --layout domains   # write a starter lint-it.toml
+leesh init --layout domains   # write a starter leesh.toml
 leesh check                   # check the whole workspace
 leesh check src/app/orders    # report findings under these paths only
 leesh report                  # rank findings by rule, layer edge, target and area
@@ -90,7 +89,7 @@ leesh explain LIT101          # show a rule's documentation
 leesh rules                   # list every rule
 ```
 
-`check` finds the workspace root from the nearest `lint-it.toml` (or
+`check` finds the workspace root from the nearest `leesh.toml` (or
 `pyproject.toml` if there is none), discovers every package with a
 `pyproject.toml` below it, and always analyzes the whole workspace so that
 imports are followed across files and packages. Output formats are `text`,
@@ -148,7 +147,7 @@ package for compatibility and differential testing. To build Rust locally:
 
 ```bash
 cargo build --locked --release --manifest-path rust/Cargo.toml
-rust/target/release/lint-it-rust check
+rust/target/release/leesh-rust check
 ```
 
 It reuses Ruff's parser, parallelizes analysis, and preserves Leesh's rules and
@@ -159,7 +158,7 @@ CLI commands. See [build and verification instructions](rust/README.md) and the
 
 ```bash
 cargo build --locked --release --manifest-path rust/Cargo.toml
-export LINT_IT_NATIVE_BINARY="$PWD/rust/target/release/lint-it-rust"
+export LEESH_NATIVE_BINARY="$PWD/rust/target/release/leesh-rust"
 make dev check test
 make build release-check
 uv run leesh rules --format markdown > docs/rules.md  # after changing a rule docstring
@@ -169,7 +168,7 @@ Python packaging uses uv and uv_build with a small native-artifact adapter.
 See [release instructions](docs/releasing.md) for preparation and tagged releases.
 
 A rule is a class with a `code`, a `name`, a docstring (its documentation) and
-`check(file: SourceFile)`. Register it in `src/lint_it/rules/registry.py`.
+`check(file: SourceFile)`. Register it in `src/leesh/rules/registry.py`.
 
 ## License
 

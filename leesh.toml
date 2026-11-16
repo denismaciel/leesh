@@ -1,0 +1,33 @@
+[workspace]
+kind = "library"
+layout = "leesh"
+
+[conventions]
+extend_allowed_bases = ["ast.NodeTransformer", "ast.NodeVisitor", "html.parser.HTMLParser"]
+
+[layouts.leesh]
+extends = "flat"
+layers = [
+  { glob = "build_backend.py", layer = "boundary" },
+  { glob = "benchmarks/**/*.py", layer = "test" },
+  { glob = "src/*/baseline.py", layer = "core" },
+  { glob = "src/*/config_values.py", layer = "core" },
+  { glob = "src/*/engine.py", layer = "core" },
+  { glob = "src/*/globs.py", layer = "core" },
+  { glob = "src/*/imports.py", layer = "core" },
+  { glob = "src/*/layouts.py", layer = "core" },
+  { glob = "src/*/reporting.py", layer = "core" },
+  { glob = "src/*/symbols.py", layer = "core" },
+  { glob = "src/*/workspace.py", layer = "core" },
+  { glob = "src/*/rules/**/*.py", layer = "core" },
+]
+
+[[ignore]]
+rules = ["LIT304"]
+paths = ["benchmarks/differential_plugin.py"]
+reason = "The differential harness intercepts oracle engine runs to compare real native subprocess results."
+
+[[ignore]]
+rules = ["LIT304"]
+paths = ["tests/test_launcher.py", "tests/test_packaging.py"]
+reason = "Packaging tests isolate exec replacement, host platform detection and release downloads without replacing the test process or using the network."

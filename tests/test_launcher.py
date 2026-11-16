@@ -9,19 +9,19 @@ from unittest.mock import Mock
 
 import pytest
 
-from lint_it import _native
+from leesh import _native
 
 
 def test_binary_location(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_native, "__file__", "/package with spaces/lint_it/_native.py")
-    for platform, executable in [("posix", "lint-it-rust"), ("nt", "lint-it-rust.exe")]:
+    monkeypatch.setattr(_native, "__file__", "/package with spaces/leesh/_native.py")
+    for platform, executable in [("posix", "leesh-rust"), ("nt", "leesh-rust.exe")]:
         monkeypatch.setattr(_native, "os", SimpleNamespace(name=platform))
-        assert _native._binary_path() == Path("/package with spaces/lint_it/_bin") / executable
+        assert _native._binary_path() == Path("/package with spaces/leesh/_bin") / executable
 
 
 @pytest.fixture
 def binary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    path = tmp_path / "package with spaces" / "_bin" / "lint-it-rust"
+    path = tmp_path / "package with spaces" / "_bin" / "leesh-rust"
     path.parent.mkdir(parents=True)
     path.touch()
     monkeypatch.setattr(_native, "_binary_path", lambda: path)
@@ -46,7 +46,7 @@ def test_posix_console_replaces_process(binary: Path, monkeypatch: pytest.Monkey
     execute = Mock(side_effect=ReplacedProcess)
     run = Mock()
     monkeypatch.setattr(_native, "os", SimpleNamespace(name="posix", execv=execute))
-    monkeypatch.setattr(_native.sys, "argv", ["lint-it", "check", "path with spaces"])
+    monkeypatch.setattr(_native.sys, "argv", ["leesh", "check", "path with spaces"])
     monkeypatch.setattr(_native.subprocess, "run", run)
     with pytest.raises(ReplacedProcess):
         _native.main()
@@ -57,7 +57,7 @@ def test_posix_console_replaces_process(binary: Path, monkeypatch: pytest.Monkey
 def test_windows_console_uses_subprocess(binary: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     run = Mock(return_value=subprocess.CompletedProcess([], 7))
     monkeypatch.setattr(_native, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr(_native.sys, "argv", ["lint-it", "rules"])
+    monkeypatch.setattr(_native.sys, "argv", ["leesh", "rules"])
     monkeypatch.setattr(_native.subprocess, "run", run)
     assert _native.main() == 7
     run.assert_called_once_with([str(binary), "rules"], check=False)

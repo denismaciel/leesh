@@ -52,7 +52,7 @@ def version() -> str:
 
 
 def asset(target: str) -> str:
-    return f"lint-it-rust-{target}" + (".exe" if target.endswith("msvc") else "")
+    return f"leesh-rust-{target}" + (".exe" if target.endswith("msvc") else "")
 
 
 def download_run(run_id: str, destination: Path) -> dict[str, object]:
@@ -118,6 +118,11 @@ def verify_wheel(path: Path, binary: Path | None = None) -> None:
         names = wheel.namelist()
         if len(set(names)) != len(names):
             raise SystemExit("Duplicate wheel members")
+        if any(name.startswith("lint_it/") for name in names):
+            raise SystemExit("Wheel contains the removed lint_it package")
+        entry_points = next(name for name in names if name.endswith(".dist-info/entry_points.txt"))
+        if "lint-it =" in wheel.read(entry_points).decode():
+            raise SystemExit("Wheel installs the removed lint-it CLI")
         metadata = next(name for name in names if name.endswith(".dist-info/WHEEL"))
         data = wheel.read(metadata).decode()
         python_tag, abi_tag, platforms = tag.split("-")
@@ -125,7 +130,7 @@ def verify_wheel(path: Path, binary: Path | None = None) -> None:
         actual_tags = {line for line in data.splitlines() if line.startswith("Tag:")}
         if "Root-Is-Purelib: false" not in data or actual_tags != expected_tags:
             raise SystemExit("Native wheel metadata does not match filename")
-        native = [name for name in names if name.startswith("lint_it/_bin/")]
+        native = [name for name in names if name.startswith("leesh/_bin/")]
         if len(native) != 1 or not wheel.getinfo(native[0]).external_attr >> 16 & 0o111:
             raise SystemExit("Expected one executable bundled binary")
         if binary is not None and wheel.read(native[0]) != binary.read_bytes():
@@ -147,7 +152,7 @@ def verify_wheel(path: Path, binary: Path | None = None) -> None:
 
 def prepare(run_id: str) -> None:
     current = version()
-    with tempfile.TemporaryDirectory(prefix="lint-it-native-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="leesh-native-") as temporary:
         work = Path(temporary)
         download_run(run_id, work)
         checksums = {}
@@ -169,7 +174,7 @@ def prepare(run_id: str) -> None:
 
 def check() -> None:
     current = version()
-    with tempfile.TemporaryDirectory(prefix="lint-it-release-check-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="leesh-release-check-") as temporary:
         work = Path(temporary)
         run("uv", "build", "--no-sources", "--out-dir", str(work / "dist"))
         artifacts = sorted((work / "dist").glob("*.whl")) + sorted((work / "dist").glob("*.tar.gz"))
@@ -198,9 +203,9 @@ def check() -> None:
                 f"from importlib.metadata import version; assert version('leesh') == {current!r}",
                 cwd=work,
             )
-            run(str(python), "-I", "-m", "lint_it", "rules", cwd=work)
+            run(str(python), "-I", "-m", "leesh", "rules", cwd=work)
             scripts = environment / ("Scripts" if os.name == "nt" else "bin")
-            for command in ("leesh", "lint-it"):
+            for command in ("leesh",):
                 executable = command + (".exe" if os.name == "nt" else "")
                 run(str(scripts / executable), "rules", cwd=work)
 
@@ -214,7 +219,7 @@ def stage() -> None:
         raise SystemExit("Rust sources changed since preparation")
     if len(manifest["workflow_runs"]) != 1:
         raise SystemExit("Expected one complete native build run")
-    with tempfile.TemporaryDirectory(prefix="lint-it-stage-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="leesh-stage-") as temporary:
         work = Path(temporary)
         download_run(str(manifest["workflow_runs"][0]), work / "native")
         destination = work / "release"
@@ -227,8 +232,8 @@ def stage() -> None:
             shutil.copy2(binary, destination / binary.name)
             env = {
                 **os.environ,
-                "LINT_IT_NATIVE_TARGET": target,
-                "LINT_IT_NATIVE_BINARY": str(binary),
+                "LEESH_NATIVE_TARGET": target,
+                "LEESH_NATIVE_BINARY": str(binary),
             }
             run("uv", "build", "--wheel", "--no-sources", "--out-dir", str(destination), env=env)
             verify_wheel(next(destination.glob(f"*-py3-none-{TARGETS[target]}.whl")), binary)

@@ -3,9 +3,9 @@ from __future__ import annotations
 import pytest
 from conftest import Project
 
-from lint_it import reporting
-from lint_it.loader import ManifestError
-from lint_it.policy import Layer
+from leesh import reporting
+from leesh.loader import ManifestError
+from leesh.policy import Layer
 
 WORKFLOW = "src/example/workflows/orders.py"
 ACTIVITY = "src/example/workflows/activities.py"
@@ -77,7 +77,7 @@ def test_custom_layer_counts_as_its_base_when_imported(workflows: Project) -> No
 def test_custom_layer_dependencies_can_be_set(workflows: Project) -> None:
     workflows.write(
         {
-            "lint-it.toml": WORKFLOW_LAYOUT + '\n[layer_dependencies]\nworkflow = ["core"]\n',
+            "leesh.toml": WORKFLOW_LAYOUT + '\n[layer_dependencies]\nworkflow = ["core"]\n',
             MODEL: "VALUE = 1\n",
             ACTIVITY: "VALUE = 1\n",
         }

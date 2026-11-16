@@ -51,7 +51,7 @@ def prepare(project: dict, destination: Path) -> Path:
             member.name = str(relative)
             archive.extract(member, path, filter="data")
     # Same explicit policy for both tools, avoiding a vacuous all-unclassified run.
-    (path / "lint-it.toml").write_text(MANIFEST)
+    (path / "leesh.toml").write_text(MANIFEST)
     if not (path / "pyproject.toml").exists():
         (path / "pyproject.toml").write_text('[project]\nname = "benchmark"\n')
     marker.write_text(project["revision"])
@@ -70,7 +70,7 @@ def invoke(command: list[str]) -> tuple[float, dict, int]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work", type=Path, default=ROOT / "benchmarks/target")
-    parser.add_argument("--binary", type=Path, default=ROOT / "rust/target/release/lint-it-rust")
+    parser.add_argument("--binary", type=Path, default=ROOT / "rust/target/release/leesh-rust")
     parser.add_argument("--baseline-binary", type=Path)
     parser.add_argument("--runs", type=int, default=7)
     parser.add_argument("--jobs", type=int, nargs="+", default=[1, 4])
@@ -131,7 +131,7 @@ def main() -> None:
                 "python": [
                     sys.executable,
                     "-c",
-                    "from lint_it.cli import main; raise SystemExit(main())",
+                    "from leesh.cli import main; raise SystemExit(main())",
                     *options,
                 ],
                 "rust": [str(args.binary.resolve()), *options],

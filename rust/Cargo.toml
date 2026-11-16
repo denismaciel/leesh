@@ -1,12 +1,12 @@
 [package]
-name = "lint-it-rust"
-version = "0.20.2"
+name = "leesh-rust"
+version = "0.21.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
 
 [[bin]]
-name = "lint-it-rust"
+name = "leesh-rust"
 path = "src/main.rs"
 
 [features]

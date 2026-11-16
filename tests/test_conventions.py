@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from conftest import Project
 
-from lint_it.loader import ManifestError
+from leesh.loader import ManifestError
 
 CORE = "src/example/domains/transfers/core.py"
 POLICY = "src/example/domains/transfers/policy.py"

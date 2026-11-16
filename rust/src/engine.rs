@@ -26,7 +26,7 @@ pub fn run(w: &Workspace, selected: &[PathBuf], no_baseline: bool) -> Result {
     let manifest = w
         .manifest
         .as_ref()
-        .map_or("lint-it.toml".into(), |p| relative_name(p, &w.root));
+        .map_or("leesh.toml".into(), |p| relative_name(p, &w.root));
     let problem = |message: String| Finding {
         filename: manifest.clone(),
         line: 1,
@@ -128,7 +128,7 @@ pub fn run(w: &Workspace, selected: &[PathBuf], no_baseline: bool) -> Result {
             .map(|(_, n)| n)
             .sum();
         if stale > 0 {
-            problems.push(Finding {filename:relative_name(baseline_path,&w.root),line:1,column:0,code:"LIT003".into(),message:format!("{stale} baseline {} no longer {} a finding; run `lint-it baseline --prune` to shrink the baseline",if stale==1{"entry"}else{"entries"},if stale==1{"matches"}else{"match"}),target:None});
+            problems.push(Finding {filename:relative_name(baseline_path,&w.root),line:1,column:0,code:"LIT003".into(),message:format!("{stale} baseline {} no longer {} a finding; run `leesh baseline --prune` to shrink the baseline",if stale==1{"entry"}else{"entries"},if stale==1{"matches"}else{"match"}),target:None});
         }
     } else {
         problems.extend(kept);

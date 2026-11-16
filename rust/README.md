@@ -1,13 +1,13 @@
-# Native lint-it
+# Native leesh
 
-Standalone Rust implementation of lint-it's 23 registered rules and seven CLI
+Standalone Rust implementation of leesh's 23 registered rules and seven CLI
 commands. The Python distribution bundles this executable and invokes it from
-`lint-it` and `python -m lint_it`. The Python implementation remains the reference.
+`leesh` and `python -m leesh`. The Python implementation remains the reference.
 
 ```sh
 # Rust >= 1.97, a C compiler and make (jemalloc); validated with Rust 1.99
 cargo build --locked --release --manifest-path rust/Cargo.toml
-rust/target/release/lint-it-rust check --format json
+rust/target/release/leesh-rust check --format json
 # Or install the executable:
 cargo install --locked --path rust
 ```

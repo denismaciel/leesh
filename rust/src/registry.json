@@ -12,7 +12,7 @@
   {
     "code": "LIT003",
     "name": "manifest",
-    "documentation": "`lint-it.toml` is invalid or out of date with the workspace.\n\nReported at `lint-it.toml:1` for schema errors, unknown keys, overrides that\nno longer match any file, overlapping overrides, and exceeded override\nbudgets. A manifest that cannot be loaded at all exits with status 2."
+    "documentation": "`leesh.toml` is invalid or out of date with the workspace.\n\nReported at `leesh.toml:1` for schema errors, unknown keys, overrides that\nno longer match any file, overlapping overrides, and exceeded override\nbudgets. A manifest that cannot be loaded at all exits with status 2."
   },
   {
     "code": "LIT101",

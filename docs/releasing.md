@@ -1,8 +1,8 @@
 # Releasing Leesh
 
-The Python distribution is `leesh`, with primary CLI `leesh` and compatibility
-alias `lint-it`. The import package remains `lint_it`; config filenames, native
-executable/asset names and repository remain unchanged.
+The Python distribution, import package, and CLI are `leesh`. Configuration
+uses `leesh.toml`; native executables and assets use `leesh-rust`. No old module
+or command aliases are installed. The repository URL remains unchanged.
 
 Distribution uses PyPI plus GitHub Git tags and attached Python wheels/sdists. Installing
 from Git or an sdist uses `build_backend.py` to fetch a release executable and verify
@@ -11,7 +11,7 @@ need no download. No runtime fallback or runtime network access is used.
 
 1. Use a numeric `X.Y.Z` version shared by Python and Cargo. Update `pyproject.toml`, `rust/Cargo.toml`, `rust/Cargo.lock`,
    `uv.lock`, and the changelog. Build Rust locally and use
-   `LINT_IT_NATIVE_BINARY=/absolute/path/to/lint-it-rust uv sync` for development.
+   `LEESH_NATIVE_BINARY=/absolute/path/to/leesh-rust uv sync` for development.
 2. Run the **Native release artifacts** workflow from the canonical repository’s `main` branch on the release commit. All five
    targets must build and pass native/Python packaging smoke tests. Download the
    artifacts; Linux executables are statically linked musl builds.
@@ -24,8 +24,8 @@ need no download. No runtime fallback or runtime network access is used.
    Regenerate `THIRD_PARTY_NOTICES.txt` with `uv run python scripts/generate_notices.py`
    when changing dependencies or the Rust toolchain, updating pinned runtime notices
    when needed.
-4. Build each wheel from the final checkout using `LINT_IT_NATIVE_BINARY` and
-   `LINT_IT_NATIVE_TARGET` for the matching downloaded executable. Build the sdist
+4. Build each wheel from the final checkout using `LEESH_NATIVE_BINARY` and
+   `LEESH_NATIVE_TARGET` for the matching downloaded executable. Build the sdist
    from that same checkout. Verify metadata, embedded executables, notices, and
    clean wheel/sdist installations. Run the complete differential suite and CI.
 5. Commit the checksum manifest and metadata, merge, and tag `v<VERSION>`. The
@@ -36,11 +36,11 @@ need no download. No runtime fallback or runtime network access is used.
    A manual dispatch stages artifacts only.
    The manifest pins executable bytes; retain these assets for pinned Git clients.
 6. Verify a fresh Git-tag install and the pre-commit hook after publication, without
-   `LINT_IT_NATIVE_BINARY` or a Rust toolchain in the client's environment.
+   `LEESH_NATIVE_BINARY` or a Rust toolchain in the client's environment.
 
-`LINT_IT_NATIVE_BINARY` is an explicit development/release-build override; normal
+`LEESH_NATIVE_BINARY` is an explicit development/release-build override; normal
 client builds always use the version-pinned, checksum-verified release assets.
-`LINT_IT_NATIVE_TARGET` supports packaging a prebuilt executable for another host;
+`LEESH_NATIVE_TARGET` supports packaging a prebuilt executable for another host;
 it must match the supplied binary. Release builders are responsible for verifying
 that pairing for macOS/Windows. Linux wheel builds inspect ELF bytes directly,
 including when cross-packaging ARM on x86: executable ELF64 architecture must match,
@@ -73,7 +73,7 @@ installs remain offline. Editable installs use the same verified binary.
 `make dev`, `make check`, `make test`, `make build`, and `make release-check`
 provide the shared package commands. `release-check` installs both distributions
 in separate clean environments outside the checkout and exercises the CLI.
-For an unreleased version, first compile Rust and export `LINT_IT_NATIVE_BINARY`
+For an unreleased version, first compile Rust and export `LEESH_NATIVE_BINARY`
 to that executable; do not publish this local build as a portable artifact.
 
 A failed publication can leave a draft. Inspect its assets and checksums before

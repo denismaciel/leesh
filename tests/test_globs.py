@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from lint_it.globs import matches_glob
+from leesh.globs import matches_glob
 
 
 @pytest.mark.parametrize(

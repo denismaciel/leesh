@@ -3,7 +3,7 @@
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use clap::{Parser, Subcommand};
-use lint_it_rust::{
+use leesh_rust::{
     engine,
     model::{Finding, relative_name},
     reporting, workspace,
@@ -93,7 +93,7 @@ fn load(root: Option<PathBuf>, format: &str) -> Result<workspace::Workspace, ()>
         Ok(w) => Ok(w),
         Err(message) => {
             let p = Finding {
-                filename: "lint-it.toml".into(),
+                filename: "leesh.toml".into(),
                 line: 1,
                 column: 0,
                 code: "LIT003".into(),
@@ -140,7 +140,7 @@ fn set_jobs(jobs: Option<u16>) -> Result<(), String> {
     Ok(())
 }
 fn execute(command: Command) -> Result<u8, String> {
-    let _span = lint_it_rust::profile::span("command");
+    let _span = leesh_rust::profile::span("command");
     match command {
         Command::Check {
             paths,
@@ -166,7 +166,7 @@ fn execute(command: Command) -> Result<u8, String> {
                 println!("{output}")
             };
             let exit_code = u8::from(!result.findings.is_empty());
-            let drop_span = lint_it_rust::profile::span("workspace_drop");
+            let drop_span = leesh_rust::profile::span("workspace_drop");
             drop(w);
             drop(drop_span);
             Ok(exit_code)
@@ -190,7 +190,7 @@ fn execute(command: Command) -> Result<u8, String> {
                 .map(|n| {
                     reporting::rule(n)
                         .map(|r| r.code.clone())
-                        .ok_or("unknown rule; run `lint-it rules`".to_owned())
+                        .ok_or("unknown rule; run `leesh rules`".to_owned())
                 })
                 .collect();
             let codes = codes?;
@@ -215,7 +215,10 @@ fn execute(command: Command) -> Result<u8, String> {
                 return Ok(2);
             };
             let Some(path) = &w.baseline_path else {
-                return Err("set workspace.baseline in lint-it.toml, e.g. baseline = \"lint-it-baseline.json\"".into());
+                return Err(
+                    "set workspace.baseline in leesh.toml, e.g. baseline = \"leesh-baseline.json\""
+                        .into(),
+                );
             };
             let result = engine::run(&w, &[], true);
             let mut actual = BTreeMap::new();
@@ -302,7 +305,7 @@ fn execute(command: Command) -> Result<u8, String> {
         }
         Command::Explain { code } => {
             let r = reporting::rule(&code)
-                .ok_or_else(|| format!("unknown rule {code}; run `lint-it rules`"))?;
+                .ok_or_else(|| format!("unknown rule {code}; run `leesh rules`"))?;
             println!("{} {}\n\n{}", r.code, r.name, r.documentation);
             Ok(0)
         }
@@ -324,7 +327,7 @@ fn execute(command: Command) -> Result<u8, String> {
         Command::Init { root, kind, layout } => {
             use std::io::Write;
             let path: PathBuf = root
-                .join("lint-it.toml")
+                .join("leesh.toml")
                 .components()
                 .filter(|c| !matches!(c, std::path::Component::CurDir))
                 .collect();
@@ -339,8 +342,8 @@ fn execute(command: Command) -> Result<u8, String> {
                         e.to_string()
                     }
                 })?;
-            file.write_all(native_newlines(format!("# lint-it manifest: https://github.com/denismaciel/lint-it/blob/main/docs/configuration.md\n\n[workspace]\nkind = \"{kind}\"\nlayout = \"{layout}\"\n")).as_bytes()).map_err(|e|e.to_string())?;
-            println!("wrote {}; run `lint-it check` next", path.display());
+            file.write_all(native_newlines(format!("# leesh manifest: https://github.com/denismaciel/lint-it/blob/main/docs/configuration.md\n\n[workspace]\nkind = \"{kind}\"\nlayout = \"{layout}\"\n")).as_bytes()).map_err(|e|e.to_string())?;
+            println!("wrote {}; run `leesh check` next", path.display());
             Ok(0)
         }
     }
@@ -383,11 +386,11 @@ fn render_baseline(counts: &BTreeMap<(String, String, String), usize>) -> String
 }
 fn main() -> ExitCode {
     let result = execute(Cli::parse().command);
-    lint_it_rust::profile::print();
+    leesh_rust::profile::print();
     match result {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            eprintln!("lint-it: {error}");
+            eprintln!("leesh: {error}");
             ExitCode::from(2)
         }
     }

@@ -3,7 +3,7 @@
 This benchmark compares the existing Python implementation with the standalone
 Rust port. It measures a complete fresh-process `check --format json`, including
 startup, file discovery, parsing, symbol resolution, rules and output. It does
-not compare lint-it's rules with Ruff's different rules.
+not compare leesh's rules with Ruff's different rules.
 
 ## Reproduce
 
@@ -17,7 +17,7 @@ uv run python benchmarks/compare.py --project requests --project flask --runs 7 
 The runner downloads immutable revisions listed in [projects.json](projects.json)
 into ignored `benchmarks/target/`. Requests and Flask are the default selection;
 CI also uses only those two projects. No upstream
-project code is imported or executed. It overlays the **same** explicit lint-it
+project code is imported or executed. It overlays the **same** explicit leesh
 manifest for both executables: Python files are core, test directories are test,
 examples are boundary, and package initializers are markers. This intentionally
 exercises the rules; the resulting findings aren't recommendations for those
@@ -71,7 +71,7 @@ To compare a saved original binary with the current release:
 
 ```sh
 uv run python benchmarks/compare.py --project requests --project flask --runs 7 --jobs 1 4 \
-  --baseline-binary /path/to/original/lint-it-rust --output benchmarks/optimized-results.json
+  --baseline-binary /path/to/original/leesh-rust --output benchmarks/optimized-results.json
 ```
 
 ## Eight-worker follow-up

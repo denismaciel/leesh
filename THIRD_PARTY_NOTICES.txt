@@ -6,7 +6,7 @@ Identical license texts are grouped; original copyright/license texts are retain
 Nested notices include jemalloc and Unicode data licenses.
 Runtime notices cover Rust 1.99.0 std, LLVM runtimes, and musl 1.2.4/1.2.5/1.2.6.
 Pinned runtime origins and checksums: scripts/licenses/runtime-sources.json.
-This file supplements lint-it's own MIT LICENSE.
+This file supplements leesh's own MIT LICENSE.
 
 
 ================================================================================

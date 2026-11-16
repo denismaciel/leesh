@@ -5,15 +5,15 @@ import json
 import pytest
 from conftest import Project
 
-from lint_it import baseline
-from lint_it.cli import main
-from lint_it.loader import ManifestError
+from leesh import baseline
+from leesh.cli import main
+from leesh.loader import ManifestError
 
 CORE = "src/example/domains/orders/core.py"
 SERVICE = "src/example/domains/orders/service.py"
 REPOSITORY = "src/example/domains/orders/persistence/repository.py"
 TEST = "tests/test_orders.py"
-BASELINE = '[workspace]\nbaseline = "lint-it-baseline.json"\n'
+BASELINE = '[workspace]\nbaseline = "leesh-baseline.json"\n'
 
 
 def run(project: Project, *args: str) -> int:
@@ -21,7 +21,7 @@ def run(project: Project, *args: str) -> int:
 
 
 def recorded(project: Project) -> dict[str, object]:
-    return json.loads((project.root / "lint-it-baseline.json").read_text(encoding="utf-8"))
+    return json.loads((project.root / "leesh-baseline.json").read_text(encoding="utf-8"))
 
 
 def test_ignore_by_layer_drops_only_that_rule(project: Project) -> None:
@@ -112,7 +112,7 @@ def test_baseline_records_findings_without_lines(
             CORE: [{"code": "LIT102", "message": "core modules cannot import httpx", "count": 2}]
         },
     }
-    assert capsys.readouterr().out == "wrote lint-it-baseline.json: 2 findings in 1 files (was 0)\n"
+    assert capsys.readouterr().out == "wrote leesh-baseline.json: 2 findings in 1 files (was 0)\n"
 
 
 def test_check_reports_only_findings_beyond_the_baseline(
@@ -142,12 +142,12 @@ def test_fixed_findings_make_the_baseline_stale_until_pruned(
 
     assert run(project, "check") == 1
     assert capsys.readouterr().out.splitlines()[:2] == [
-        "lint-it-baseline.json:1:1: LIT003 1 baseline entry no longer matches a finding; "
-        "run `lint-it baseline --prune` to shrink the baseline",
+        "leesh-baseline.json:1:1: LIT003 1 baseline entry no longer matches a finding; "
+        "run `leesh baseline --prune` to shrink the baseline",
         "src/example/domains/orders/model.py:1:1: LIT102 core modules cannot import redis",
     ]
     assert run(project, "baseline", "--prune") == 0
-    assert list(baseline.parse((project.root / "lint-it-baseline.json").read_text()).counts) == [
+    assert list(baseline.parse((project.root / "leesh-baseline.json").read_text()).counts) == [
         (SERVICE, "LIT102", "shell modules cannot import fastapi")
     ]
 
@@ -171,7 +171,7 @@ def test_baseline_needs_a_configured_path(
     ],
 )
 def test_corrupt_baselines_are_manifest_errors(project: Project, text: str, message: str) -> None:
-    project.manifest(BASELINE).write({"lint-it-baseline.json": text})
+    project.manifest(BASELINE).write({"leesh-baseline.json": text})
     with pytest.raises(ManifestError, match=message):
         project.load()
 

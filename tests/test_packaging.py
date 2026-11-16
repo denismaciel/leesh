@@ -20,8 +20,8 @@ from scripts import release
 
 @pytest.fixture(autouse=True)
 def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("LINT_IT_NATIVE_TARGET", raising=False)
-    monkeypatch.delenv("LINT_IT_NATIVE_BINARY", raising=False)
+    monkeypatch.delenv("LEESH_NATIVE_TARGET", raising=False)
+    monkeypatch.delenv("LEESH_NATIVE_BINARY", raising=False)
 
 
 @pytest.mark.parametrize(
@@ -62,21 +62,21 @@ def test_unsupported_platform(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_explicit_target_overrides_host(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(build_backend.platform, "system", lambda: "Linux")
     monkeypatch.setattr(build_backend.platform, "machine", lambda: "riscv64")
-    monkeypatch.setenv("LINT_IT_NATIVE_TARGET", "aarch64-apple-darwin")
+    monkeypatch.setenv("LEESH_NATIVE_TARGET", "aarch64-apple-darwin")
     assert build_backend.native_platform() == ("aarch64-apple-darwin", "macosx_11_0_arm64")
 
 
 def test_unsupported_explicit_target(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LINT_IT_NATIVE_TARGET", "unknown-target")
-    with pytest.raises(RuntimeError, match="Unsupported LINT_IT_NATIVE_TARGET: unknown-target"):
+    monkeypatch.setenv("LEESH_NATIVE_TARGET", "unknown-target")
+    with pytest.raises(RuntimeError, match="Unsupported LEESH_NATIVE_TARGET: unknown-target"):
         build_backend.native_platform()
 
 
 @pytest.mark.parametrize(
     ("target", "filename"),
     [
-        ("x86_64-unknown-linux-musl", "lint-it-rust"),
-        ("x86_64-pc-windows-msvc", "lint-it-rust.exe"),
+        ("x86_64-unknown-linux-musl", "leesh-rust"),
+        ("x86_64-pc-windows-msvc", "leesh-rust.exe"),
     ],
 )
 def test_local_binary_override(
@@ -85,11 +85,11 @@ def test_local_binary_override(
     source = tmp_path / "compiled binary"
     source.write_bytes(b"local executable")
     source.chmod(0o600)
-    monkeypatch.setenv("LINT_IT_NATIVE_BINARY", str(source))
+    monkeypatch.setenv("LEESH_NATIVE_BINARY", str(source))
     network = Mock(side_effect=AssertionError("local builds must not download"))
     monkeypatch.setattr(build_backend.urllib.request, "urlopen", network)
     result = build_backend.bundle_binary(tmp_path, "1.2.3", target)
-    assert result == tmp_path / "src" / "lint_it" / "_bin" / filename
+    assert result == tmp_path / "src" / "leesh" / "_bin" / filename
     assert result.read_bytes() == source.read_bytes()
     if os.name != "nt":
         assert result.stat().st_mode & 0o777 == 0o755
@@ -102,7 +102,7 @@ def write_manifest(root: Path, data: bytes, version: str = "1.2.3") -> None:
             {
                 "version": version,
                 "sha256": {
-                    "lint-it-rust-x86_64-unknown-linux-musl": hashlib.sha256(data).hexdigest()
+                    "leesh-rust-x86_64-unknown-linux-musl": hashlib.sha256(data).hexdigest()
                 },
             }
         )
@@ -124,7 +124,7 @@ def test_release_download_verifies_checksum(
     request = download.call_args.args[0]
     assert request.full_url == (
         "https://github.com/denismaciel/lint-it/releases/download/v1.2.3/"
-        "lint-it-rust-x86_64-unknown-linux-musl"
+        "leesh-rust-x86_64-unknown-linux-musl"
     )
     assert download.call_args.kwargs == {"timeout": 120}
 
@@ -133,7 +133,7 @@ def test_bad_download_preserves_existing_binary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_manifest(tmp_path, b"expected binary")
-    existing = tmp_path / "src" / "lint_it" / "_bin" / "lint-it-rust"
+    existing = tmp_path / "src" / "leesh" / "_bin" / "leesh-rust"
     existing.parent.mkdir(parents=True)
     existing.write_bytes(b"previous binary")
     monkeypatch.setattr(
@@ -160,10 +160,10 @@ def test_cross_platform_wheel_preserves_editable_binary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
 ) -> None:
     """Release staging must not replace the executable used by local developers."""
-    package = tmp_path / "src/lint_it"
+    package = tmp_path / "src/leesh"
     (package / "_bin").mkdir(parents=True)
     (package / "__init__.py").write_text("")
-    host_binary = package / "_bin/lint-it-rust"
+    host_binary = package / "_bin/leesh-rust"
     host_binary.write_bytes(b"host executable")
     target_binary = tmp_path / "macos-executable"
     payload = elf_executable() if "linux" in target else b"macOS executable"
@@ -171,12 +171,13 @@ def test_cross_platform_wheel_preserves_editable_binary(
     (tmp_path / "native-artifacts.json").write_text("{}")
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "leesh"\nversion = "1.2.3"\n'
+        '[project.scripts]\nleesh = "leesh._native:main"\n'
         '[build-system]\nrequires = ["uv_build==0.12.4"]\nbuild-backend = "uv_build"\n'
-        '[tool.uv.build-backend]\nmodule-name = "lint_it"\nsource-exclude = ["_bin/**"]\n'
+        '[tool.uv.build-backend]\nmodule-name = "leesh"\nsource-exclude = ["_bin/**"]\n'
     )
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("LINT_IT_NATIVE_BINARY", str(target_binary))
-    monkeypatch.setenv("LINT_IT_NATIVE_TARGET", target)
+    monkeypatch.setenv("LEESH_NATIVE_BINARY", str(target_binary))
+    monkeypatch.setenv("LEESH_NATIVE_TARGET", target)
     destination = tmp_path / "dist"
     destination.mkdir()
     filename = build_backend.build_wheel(str(destination))
@@ -184,7 +185,7 @@ def test_cross_platform_wheel_preserves_editable_binary(
     release.verify_wheel(destination / filename, target_binary)
     assert host_binary.read_bytes() == b"host executable"
     with zipfile.ZipFile(destination / filename) as wheel:
-        assert wheel.read("lint_it/_bin/lint-it-rust") == payload
+        assert wheel.read("leesh/_bin/leesh-rust") == payload
 
 
 def elf_executable(

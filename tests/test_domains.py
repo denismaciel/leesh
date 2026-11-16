@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from conftest import Project
 
-from lint_it.loader import ManifestError
+from leesh.loader import ManifestError
 
 BILLING = "src/example/domains/billing/service.py"
 BILLING_CORE = "src/example/domains/billing/core.py"

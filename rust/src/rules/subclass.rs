@@ -166,7 +166,7 @@ pub(super) fn check(file: &Source, w: &Workspace, out: &mut Vec<Finding>) {
                 })
             {
                 if unknown {
-                    described = format!("'{local}', which lint-it cannot resolve")
+                    described = format!("'{local}', which leesh cannot resolve")
                 }
                 rejected.push((base, described));
                 continue;

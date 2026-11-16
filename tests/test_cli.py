@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 from conftest import Project
 
-from lint_it import engine, parallel, reporting
-from lint_it.cli import main
-from lint_it.rules.registry import ALL_RULES
+from leesh import engine, parallel, reporting
+from leesh.cli import main
+from leesh.rules.registry import ALL_RULES
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 CORE = "src/example/domains/orders/core.py"
@@ -104,9 +104,9 @@ def test_invalid_manifest_exits_two(
     captured = capsys.readouterr()
     if output == "json":
         [problem] = json.loads(captured.out)["findings"]
-        assert (problem["filename"], problem["code"]) == ("lint-it.toml", "LIT003")
+        assert (problem["filename"], problem["code"]) == ("leesh.toml", "LIT003")
     else:
-        assert captured.err.startswith("lint-it.toml:1:1: LIT003 workspace.layout must be one of")
+        assert captured.err.startswith("leesh.toml:1:1: LIT003 workspace.layout must be one of")
 
 
 def test_stale_manifest_entries_are_findings(
@@ -117,7 +117,7 @@ def test_stale_manifest_entries_are_findings(
     )
 
     assert run(project, "check") == 1
-    assert "lint-it.toml:1:1: LIT003 stale layout override" in capsys.readouterr().out
+    assert "leesh.toml:1:1: LIT003 stale layout override" in capsys.readouterr().out
 
 
 def test_paths_outside_the_workspace_are_usage_errors(
@@ -165,7 +165,7 @@ def test_classify_reports_files_outside_packages(
 
 def test_init_writes_a_starter_manifest(project: Project) -> None:
     assert run(project, "init", "--layout", "flat", "--kind", "library") == 0
-    manifest = (project.root / "lint-it.toml").read_text()
+    manifest = (project.root / "leesh.toml").read_text()
 
     assert 'kind = "library"\nlayout = "flat"\n' in manifest
     assert project.findings() == []
@@ -190,14 +190,14 @@ def test_every_rule_is_documented() -> None:
 def test_rule_reference_is_up_to_date() -> None:
     reference = (REPOSITORY / "docs/rules.md").read_text()
     assert reference == reporting.rule_reference(ALL_RULES), (
-        "regenerate with: uv run lint-it rules --format markdown > docs/rules.md"
+        "regenerate with: uv run leesh rules --format markdown > docs/rules.md"
     )
 
 
 def test_module_entry_point_runs_the_cli(project: Project) -> None:
     project.write({CORE: "import httpx\n"})
     process = subprocess.run(
-        [sys.executable, "-m", "lint_it", "check", "--format", "json"],
+        [sys.executable, "-m", "leesh", "check", "--format", "json"],
         cwd=project.root / "src",
         capture_output=True,
         text=True,
@@ -208,7 +208,7 @@ def test_module_entry_point_runs_the_cli(project: Project) -> None:
     assert [item["code"] for item in json.loads(process.stdout)["findings"]] == ["LIT102"]
 
 
-def test_lint_it_passes_its_own_rules() -> None:
+def test_leesh_passes_its_own_rules() -> None:
     assert main(["check", "--root", str(REPOSITORY)]) == 0
 
 

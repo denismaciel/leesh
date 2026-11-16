@@ -5,8 +5,8 @@ import ast
 import pytest
 from conftest import Project
 
-from lint_it import engine
-from lint_it.rules.capabilities import EffectfulCapabilityRule
+from leesh import engine
+from leesh.rules.capabilities import EffectfulCapabilityRule
 
 CORE = "src/example/domains/orders/core.py"
 MODEL = "src/example/domains/orders/model.py"

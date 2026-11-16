@@ -1,7 +1,7 @@
 """Run the existing behavioral fixtures against the native executable too.
 
 uv run python -m pytest -p benchmarks.differential_plugin
-LINT_IT_RUST_BINARY can select another build.
+LEESH_RUST_BINARY can select another build.
 """
 
 from __future__ import annotations
@@ -17,17 +17,17 @@ from pathlib import Path
 
 import pytest
 
-from lint_it import cli, engine
-from lint_it.rules.registry import ALL_RULES
+from leesh import cli, engine
+from leesh.rules.registry import ALL_RULES
 
 COMPARISONS = 0
 
-BINARY = Path(os.environ.get("LINT_IT_RUST_BINARY", "rust/target/release/lint-it-rust")).resolve()
+BINARY = Path(os.environ.get("LEESH_RUST_BINARY", "rust/target/release/leesh-rust")).resolve()
 
 
 @pytest.fixture(autouse=True)
 def native_equivalence(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest):
-    from lint_it.loader import ManifestError
+    from leesh.loader import ManifestError
 
     project_type = sys.modules["conftest"].Project
     original_load = project_type.load

@@ -35,23 +35,23 @@ PLATFORMS = {
 
 
 def native_platform() -> tuple[str, str]:
-    override = os.environ.get("LINT_IT_NATIVE_TARGET")
+    override = os.environ.get("LEESH_NATIVE_TARGET")
     if override:
         for target, tag in PLATFORMS.values():
             if target == override:
                 return target, tag
-        raise RuntimeError(f"Unsupported LINT_IT_NATIVE_TARGET: {override}")
+        raise RuntimeError(f"Unsupported LEESH_NATIVE_TARGET: {override}")
     key = (platform.system(), platform.machine())
     if key not in PLATFORMS:
-        raise RuntimeError(f"lint-it does not yet ship a native executable for {key}")
+        raise RuntimeError(f"leesh does not yet ship a native executable for {key}")
     return PLATFORMS[key]
 
 
 def bundle_binary(root: Path, version: str, target: str) -> Path:
     suffix = ".exe" if target.endswith("windows-msvc") else ""
-    destination = root / "src" / "lint_it" / "_bin" / f"lint-it-rust{suffix}"
+    destination = root / "src" / "leesh" / "_bin" / f"leesh-rust{suffix}"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    override = os.environ.get("LINT_IT_NATIVE_BINARY")
+    override = os.environ.get("LEESH_NATIVE_BINARY")
     if override:
         # Explicit local/CI builds can supply an executable built from this checkout.
         shutil.copyfile(override, destination)
@@ -59,10 +59,10 @@ def bundle_binary(root: Path, version: str, target: str) -> Path:
         manifest = json.loads((root / "native-artifacts.json").read_text())
         if manifest["version"] != version:
             raise RuntimeError("Native artifact manifest does not match the Python package version")
-        asset = f"lint-it-rust-{target}{suffix}"
+        asset = f"leesh-rust-{target}{suffix}"
         expected = manifest["sha256"][asset]
         url = f"https://github.com/denismaciel/lint-it/releases/download/v{version}/{asset}"
-        request = urllib.request.Request(url, headers={"User-Agent": "lint-it-python-build"})
+        request = urllib.request.Request(url, headers={"User-Agent": "leesh-python-build"})
         with urllib.request.urlopen(request, timeout=120) as response:
             data = response.read()
         if hashlib.sha256(data).hexdigest() != expected:
@@ -137,7 +137,7 @@ def _retag(wheel: Path, tag: str, binary: Path | None = None) -> str:
     tags = "".join(f"Tag: {python_tag}-{abi_tag}-{item}\n" for item in platforms.split("."))
     files[metadata] = (info, data.rstrip() + b"\n" + tags.encode())
     if binary is not None:
-        name = f"lint_it/_bin/{binary.name}"
+        name = f"leesh/_bin/{binary.name}"
         info = zipfile.ZipInfo(name, files[metadata][0].date_time)
         info.create_system = 3
         info.compress_type = zipfile.ZIP_DEFLATED
@@ -166,7 +166,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
     target, platform_tag = native_platform()
     # Cross-platform release builds must not replace an editable install's binary.
-    with tempfile.TemporaryDirectory(prefix="lint-it-wheel-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="leesh-wheel-") as temporary:
         staging = Path(temporary)
         shutil.copyfile(root / "native-artifacts.json", staging / "native-artifacts.json")
         binary = bundle_binary(staging, version, target)

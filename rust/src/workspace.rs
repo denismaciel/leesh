@@ -577,7 +577,7 @@ fn toml_error(error: toml::de::Error, text: &str) -> String {
 }
 pub fn find_root(start: &Path) -> PathBuf {
     let start = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
-    for marker in ["lint-it.toml", "pyproject.toml"] {
+    for marker in ["leesh.toml", "pyproject.toml"] {
         for p in start.ancestors() {
             if p.join(marker).is_file() {
                 return p.to_path_buf();
@@ -812,7 +812,7 @@ impl Workspace {
 pub fn load(root: &Path) -> Result<Workspace, String> {
     let _span = crate::profile::span("workspace_load");
     let root = root.canonicalize().map_err(|e| e.to_string())?;
-    let manifest = root.join("lint-it.toml");
+    let manifest = root.join("leesh.toml");
     let raw: Value = if manifest.is_file() {
         let text = std::fs::read_to_string(&manifest).map_err(|e| e.to_string())?;
         let v: toml::Value = toml::from_str(&text).map_err(|e| toml_error(e, &text))?;
@@ -1230,7 +1230,7 @@ mod tests {
     }
     #[test]
     fn virtual_environments_are_skipped_whatever_their_name() {
-        let root = std::env::temp_dir().join(format!("lint-it-native-venv-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("leesh-native-venv-{}", std::process::id()));
         let site = root.join(".venv315/lib/python3.15/site-packages/dep");
         std::fs::create_dir_all(&site).unwrap();
         std::fs::create_dir_all(root.join("src/example")).unwrap();
@@ -1247,7 +1247,7 @@ mod tests {
     #[test]
     fn native_workspace_classification_and_policy() {
         let root =
-            std::env::temp_dir().join(format!("lint-it-native-workspace-{}", std::process::id()));
+            std::env::temp_dir().join(format!("leesh-native-workspace-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src/example/domains/orders")).unwrap();
         std::fs::write(root.join("pyproject.toml"), "[project]\nname='example'\n").unwrap();
         std::fs::write(

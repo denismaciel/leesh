@@ -100,7 +100,7 @@ def main() -> None:
         "Nested notices include jemalloc and Unicode data licenses.\n"
         "Runtime notices cover Rust 1.99.0 std, LLVM runtimes, and musl 1.2.4/1.2.5/1.2.6.\n"
         "Pinned runtime origins and checksums: scripts/licenses/runtime-sources.json.\n"
-        "This file supplements lint-it's own MIT LICENSE.\n",
+        "This file supplements leesh's own MIT LICENSE.\n",
         "DEPENDENCY INDEX\n\n" + "\n".join(index),
     ]
     for number, (text, references) in enumerate(notices.items(), start=1):

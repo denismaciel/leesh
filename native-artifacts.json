@@ -5,10 +5,10 @@
     43913356455
   ],
   "sha256": {
-    "lint-it-rust-x86_64-unknown-linux-musl": "23fc4300548e35e72ca1edf85fe54f892c1abcf5c62418a6deed118d556be23a",
-    "lint-it-rust-aarch64-unknown-linux-musl": "ae359b3a30426171597ba2ae7db8097aab73665f43543cfd3bc6c5bb8a651785",
-    "lint-it-rust-x86_64-apple-darwin": "6e1e6b442c0878377943a54f2bab5854ceb49c6660272b18b889f3974b0e73f4",
-    "lint-it-rust-aarch64-apple-darwin": "e28ba61c019b30b84dd81eeb3fa431b0c7ab96ff74a2716f9858580a99adb291",
-    "lint-it-rust-x86_64-pc-windows-msvc.exe": "13e43f89ccd47ebfb4b498d57698504a5ec0803a1e790b368d83b0d1c326d556"
+    "leesh-rust-x86_64-unknown-linux-musl": "23fc4300548e35e72ca1edf85fe54f892c1abcf5c62418a6deed118d556be23a",
+    "leesh-rust-aarch64-unknown-linux-musl": "ae359b3a30426171597ba2ae7db8097aab73665f43543cfd3bc6c5bb8a651785",
+    "leesh-rust-x86_64-apple-darwin": "6e1e6b442c0878377943a54f2bab5854ceb49c6660272b18b889f3974b0e73f4",
+    "leesh-rust-aarch64-apple-darwin": "e28ba61c019b30b84dd81eeb3fa431b0c7ab96ff74a2716f9858580a99adb291",
+    "leesh-rust-x86_64-pc-windows-msvc.exe": "13e43f89ccd47ebfb4b498d57698504a5ec0803a1e790b368d83b0d1c326d556"
   }
 }

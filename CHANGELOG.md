@@ -1,9 +1,16 @@
 # Changelog
 
+## 0.21.0
+
+- Complete the Leesh rename: `leesh` Python module, CLI, native executable,
+  environment variables, configuration (`leesh.toml`), and baseline filenames.
+- Remove the old Python module, CLI alias, and pre-commit hook alias.
+
+
 ## 0.20.2
 
 - Publish as **Leesh** on PyPI, with `leesh` as the primary command and
-  `lint-it` retained as an alias. Existing configuration and Python imports work.
+  `leesh` retained as an alias. Existing configuration and Python imports work.
 - Build Python distributions with uv and uv_build; remove Hatch.
 - Ship verified static Linux binaries in manylinux/musllinux wheels.
 - Publish tested release artifacts with protected GitHub Actions Trusted
@@ -41,7 +48,7 @@
 
 ### Upgrading
 
-- `lint-it baseline --prune` drops LIT302 entries for such receivers.
+- `leesh baseline --prune` drops LIT302 entries for such receivers.
 
 ## 0.19.0
 
@@ -76,7 +83,7 @@
 
 - Boundary or transaction modules that import a `test` or `test-support`
   package get `LIT101` findings. Record deliberate edges with
-  `[[dependency_overrides]]` or `lint-it baseline`.
+  `[[dependency_overrides]]` or `leesh baseline`.
 
 ## 0.17.0
 
@@ -108,7 +115,7 @@
 ### Upgrading
 
 - Workspaces whose domains already import each other get `LIT104` findings
-  until they declare `[domains]`, or record them with `lint-it baseline`.
+  until they declare `[domains]`, or record them with `leesh baseline`.
 
 ## 0.15.0
 
@@ -134,20 +141,20 @@
 
 ## 0.13.0
 
-Adopting lint-it on an existing codebase, and flexibility for layouts that do
+Adopting leesh on an existing codebase, and flexibility for layouts that do
 not match the built-in ones.
 
 ### Adoption
 
 - **Baseline.** `workspace.baseline` names a JSON file of known findings,
-  keyed by file, rule and message rather than line. `lint-it baseline` writes
+  keyed by file, rule and message rather than line. `leesh baseline` writes
   it; `check` reports only findings beyond it, plus a `LIT003` finding for
-  entries that no longer match; `lint-it baseline --prune` only ever removes
+  entries that no longer match; `leesh baseline --prune` only ever removes
   entries. `check --no-baseline` shows everything.
 - **`[[ignore]]`** switches rules off by path glob and/or layer, with a reason.
   Unknown rules, `LIT001`/`LIT003`, and entries that suppress nothing in a full
   check are `LIT003` findings.
-- **`lint-it report`** ranks findings (new and baselined) by rule, `LIT101`
+- **`leesh report`** ranks findings (new and baselined) by rule, `LIT101`
   layer edge, target and directory, as text or JSON; `--rule` focuses it.
 - Findings carry a `target`: the module, package, base, call or name they are
   about. JSON output includes it, and the summary adds `baselined` and
@@ -213,7 +220,7 @@ A redesign for the first public release. Nothing is backward compatible with
 
 ### Workspace model
 
-- A manifest is optional. Without `lint-it.toml`, every package is a `server`
+- A manifest is optional. Without `leesh.toml`, every package is a `server`
   with the `domains` layout. There is no filename-guessing mode: every rule
   uses the layer of the file it checks.
 - Packages have a `kind` (`server`, `client`, `library`) and a `layout`,
@@ -271,12 +278,12 @@ has a name and a docstring, and `docs/rules.md` is generated from them.
   Filenames are relative to the workspace root.
 - `check PATH...` reports findings under those paths but always analyzes the
   whole workspace.
-- `python -m lint_it` runs the CLI.
+- `python -m leesh` runs the CLI.
 
 ### Removed
 
 - The Flake8 adapter.
-- `lint-it-advisory` (PLC001–006) and `lint-it-packages` (PKG001–003).
+- `leesh-advisory` (PLC001–006) and `leesh-packages` (PKG001–003).
 
 ### Distribution
 

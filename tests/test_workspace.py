@@ -5,12 +5,12 @@ from dataclasses import replace
 import pytest
 from conftest import Project
 
-from lint_it import engine
-from lint_it.layouts import LayerPattern
-from lint_it.loader import ManifestError
-from lint_it.policy import FORBIDDEN_IMPORTS, Layer
-from lint_it.rules.registry import ALL_RULES
-from lint_it.workspace import Kind, Origin
+from leesh import engine
+from leesh.layouts import LayerPattern
+from leesh.loader import ManifestError
+from leesh.policy import FORBIDDEN_IMPORTS, Layer
+from leesh.rules.registry import ALL_RULES
+from leesh.workspace import Kind, Origin
 
 
 def layer_of(project: Project, path: str) -> Layer | None:
@@ -241,7 +241,7 @@ def test_override_budget_counts_files(project: Project) -> None:
     project.write({"src/example/legacy/first.py": "", "src/example/legacy/second.py": ""})
     [problem] = project.findings()
 
-    assert (problem.filename, problem.line, problem.code) == ("lint-it.toml", 1, "LIT003")
+    assert (problem.filename, problem.line, problem.code) == ("leesh.toml", 1, "LIT003")
     assert "override budget exceeded: 2 files use overrides, budget is 1" in problem.message
 
 

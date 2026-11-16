@@ -12,8 +12,8 @@ import pytest
 
 BINARY = Path(
     os.environ.get(
-        "LINT_IT_RUST_BINARY",
-        str(Path(__file__).resolve().parents[1] / "rust/target/release/lint-it-rust"),
+        "LEESH_RUST_BINARY",
+        str(Path(__file__).resolve().parents[1] / "rust/target/release/leesh-rust"),
     )
 ).resolve()
 pytestmark = pytest.mark.skipif(not BINARY.is_file(), reason="build the native executable first")
@@ -41,7 +41,7 @@ def test_native_stateful_cli_matches_python(tmp_path: Path, output: str) -> None
                     [
                         sys.executable,
                         "-c",
-                        "from lint_it.cli import main; raise SystemExit(main())",
+                        "from leesh.cli import main; raise SystemExit(main())",
                     ],
                     [str(BINARY)],
                 ],
@@ -59,10 +59,10 @@ def test_native_stateful_cli_matches_python(tmp_path: Path, output: str) -> None
     compare("rules")
     compare("rules", "--format", "markdown")
     compare("init", "--layout", "flat", "--kind", "library")
-    assert (roots[0] / "lint-it.toml").read_bytes() == (roots[1] / "lint-it.toml").read_bytes()
+    assert (roots[0] / "leesh.toml").read_bytes() == (roots[1] / "leesh.toml").read_bytes()
     compare("init", "--layout", "flat")
     for root in roots:
-        with (root / "lint-it.toml").open("a") as manifest:
+        with (root / "leesh.toml").open("a") as manifest:
             manifest.write('baseline = "baseline.json"\n')
     compare("check", "--format", output, "--jobs", "1")
     compare("baseline", "--jobs", "1")
