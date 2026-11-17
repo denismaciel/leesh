@@ -11,6 +11,7 @@ from leesh.rules.capabilities import EffectfulCapabilityRule
 from leesh.rules.client_imports import ClientImportRule
 from leesh.rules.defaults import ImmutableDefaultRule
 from leesh.rules.domains import DomainDependencyRule
+from leesh.rules.dynamic_code import DynamicCodeRule
 from leesh.rules.environment import EnvironmentAccessRule
 from leesh.rules.forbidden_calls import ForbiddenCallRule
 from leesh.rules.forbidden_imports import ForbiddenImportRule
@@ -44,6 +45,7 @@ ALL_RULES: tuple[Rule, ...] = (
     FrozenValueRule(),
     AsyncCoreRule(),
     EffectfulCapabilityRule(),
+    DynamicCodeRule(),
     EnvironmentAccessRule(),
     TransactionBoundaryRule(),
     RouterConstructionRule(),

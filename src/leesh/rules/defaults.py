@@ -8,7 +8,7 @@ from leesh.core import Finding, SourceFile, finding
 from leesh.policy import EDGE_LAYERS
 
 
-def _defaults(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[ast.expr, ...]:
+def _defaults(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> tuple[ast.expr, ...]:
     keyword = tuple(value for value in node.args.kw_defaults if value is not None)
     return (*node.args.defaults, *keyword)
 
@@ -129,6 +129,11 @@ class _Visitor(ast.NodeVisitor):
 
     def _check_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         exempt = self.protocol_depth > 0 or (self.exception_depth > 0 and node.name == "__init__")
+        self._check(node, exempt=exempt)
+
+    def _check(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, *, exempt: bool
+    ) -> None:
         if not exempt and any(
             not _immutable_default(default, self.constants) for default in _defaults(node)
         ):
@@ -142,3 +147,6 @@ class _Visitor(ast.NodeVisitor):
                 )
             )
         self.generic_visit(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._check(node, exempt=False)

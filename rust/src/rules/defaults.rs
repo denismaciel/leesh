@@ -203,9 +203,10 @@ fn visit(
                     || b.ends_with(".BaseException")
             });
     }
-    if ["FunctionDef", "AsyncFunctionDef"].contains(&kind(n))
-        && !p
-        && !(e && s(n, "name") == "__init__")
+    if kind(n) == "Lambda"
+        || ["FunctionDef", "AsyncFunctionDef"].contains(&kind(n))
+            && !p
+            && !(e && s(n, "name") == "__init__")
     {
         let a = child(n, "args");
         if items(a, "defaults")

@@ -213,16 +213,37 @@ impl<'a> Resolver<'a> {
                     }
                 })
                 .collect(),
-            "Call" => self
-                .names_depth(child(node, "func"), depth + 1)
-                .into_iter()
-                .map(|name| match name.as_str() {
-                    "logging.getLogger" => "logging.Logger".into(),
-                    "structlog.get_logger" => "structlog.BoundLogger".into(),
-                    "pathlib.Path.home" | "pathlib.Path.cwd" => "pathlib.Path".into(),
-                    _ => name,
-                })
-                .collect(),
+            "Call" => {
+                let function = self.names_depth(child(node, "func"), depth + 1);
+                // A literal name is an attribute read spelled differently.
+                if function.len() == 1
+                    && function.contains("builtins.getattr")
+                    && let [object, attribute, ..] = items(node, "args")
+                    && kind(attribute) == "Constant"
+                    && let Some(attribute) = child(attribute, "value").as_str()
+                {
+                    return self
+                        .names_depth(object, depth + 1)
+                        .into_iter()
+                        .map(|name| {
+                            if name == "?" {
+                                name
+                            } else {
+                                format!("{name}.{attribute}")
+                            }
+                        })
+                        .collect();
+                }
+                function
+                    .into_iter()
+                    .map(|name| match name.as_str() {
+                        "logging.getLogger" => "logging.Logger".into(),
+                        "structlog.get_logger" => "structlog.BoundLogger".into(),
+                        "pathlib.Path.home" | "pathlib.Path.cwd" => "pathlib.Path".into(),
+                        _ => name,
+                    })
+                    .collect()
+            }
             "Subscript" => self.names_depth(child(node, "value"), depth + 1),
             "BinOp" if kind(child(node, "op")) == "Div" => {
                 self.names_depth(child(node, "left"), depth + 1)
@@ -560,7 +581,7 @@ impl<'a> Resolver<'a> {
         }
     }
 }
-const BUILTINS: &str = "__loader__ bool memoryview bytearray bytes classmethod complex dict enumerate filter float frozenset property int list map object range reversed set slice staticmethod str super tuple type zip BaseException BaseExceptionGroup Exception GeneratorExit KeyboardInterrupt SystemExit ArithmeticError AssertionError AttributeError BufferError EOFError ImportError LookupError MemoryError NameError OSError ReferenceError RuntimeError StopAsyncIteration StopIteration SyntaxError SystemError TypeError ValueError Warning FloatingPointError OverflowError ZeroDivisionError BytesWarning DeprecationWarning EncodingWarning FutureWarning ImportWarning PendingDeprecationWarning ResourceWarning RuntimeWarning SyntaxWarning UnicodeWarning UserWarning BlockingIOError ChildProcessError ConnectionError FileExistsError FileNotFoundError InterruptedError IsADirectoryError NotADirectoryError PermissionError ProcessLookupError TimeoutError IndentationError _IncompleteInputError IndexError KeyError ModuleNotFoundError NotImplementedError PythonFinalizationError RecursionError UnboundLocalError UnicodeError BrokenPipeError ConnectionAbortedError ConnectionRefusedError ConnectionResetError TabError UnicodeDecodeError UnicodeEncodeError UnicodeTranslateError ExceptionGroup EnvironmentError IOError open print input getattr setattr delattr eval exec __import__";
+const BUILTINS: &str = "__loader__ bool memoryview bytearray bytes classmethod complex dict enumerate filter float frozenset property int list map object range reversed set slice staticmethod str super tuple type zip BaseException BaseExceptionGroup Exception GeneratorExit KeyboardInterrupt SystemExit ArithmeticError AssertionError AttributeError BufferError EOFError ImportError LookupError MemoryError NameError OSError ReferenceError RuntimeError StopAsyncIteration StopIteration SyntaxError SystemError TypeError ValueError Warning FloatingPointError OverflowError ZeroDivisionError BytesWarning DeprecationWarning EncodingWarning FutureWarning ImportWarning PendingDeprecationWarning ResourceWarning RuntimeWarning SyntaxWarning UnicodeWarning UserWarning BlockingIOError ChildProcessError ConnectionError FileExistsError FileNotFoundError InterruptedError IsADirectoryError NotADirectoryError PermissionError ProcessLookupError TimeoutError IndentationError _IncompleteInputError IndexError KeyError ModuleNotFoundError NotImplementedError PythonFinalizationError RecursionError UnboundLocalError UnicodeError BrokenPipeError ConnectionAbortedError ConnectionRefusedError ConnectionResetError TabError UnicodeDecodeError UnicodeEncodeError UnicodeTranslateError ExceptionGroup EnvironmentError IOError open print input getattr setattr delattr eval exec compile __import__ globals locals breakpoint sorted iter";
 pub fn resolve(tree: &Node, package: Option<&str>) -> Symbols {
     let _span = crate::profile::span("symbols");
     let bindings = BUILTINS

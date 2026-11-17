@@ -8,6 +8,23 @@ from leesh.policy import INNER_LAYERS
 from leesh.rules.shared.effects import is_ambient
 from leesh.symbols import local_names
 
+STATEFUL_CONSTRUCTORS = frozenset(
+    {
+        "builtins.bytearray",
+        "builtins.dict",
+        "builtins.iter",
+        "builtins.list",
+        "builtins.set",
+        "collections.ChainMap",
+        "collections.Counter",
+        "collections.OrderedDict",
+        "collections.defaultdict",
+        "collections.deque",
+        "itertools.count",
+        "itertools.cycle",
+    }
+)
+
 
 def _scope_nodes(body: list[ast.stmt]) -> Iterable[ast.AST]:
     for node in body:
@@ -29,7 +46,8 @@ class AmbientStateRule:
 
     Reports process-wide context (working directory, locale, decimal context,
     context variables), writes through `global`/`nonlocal`, and reads of
-    mutable module-level collections. Pass the value in and return the new
+    mutable module-level collections and iterators (`[]`, `defaultdict()`,
+    `deque()`, `itertools.count()`). Pass the value in and return the new
     state instead. Environment variables are covered by LIT301.
     """
 
@@ -63,12 +81,8 @@ class AmbientStateRule:
                     value, (ast.List, ast.Dict, ast.Set, ast.ListComp, ast.DictComp, ast.SetComp)
                 ) or (
                     isinstance(value, ast.Call)
-                    and symbols.get(value.func)
-                    in (
-                        frozenset({"builtins.list"}),
-                        frozenset({"builtins.dict"}),
-                        frozenset({"builtins.set"}),
-                    )
+                    and len(names := symbols.get(value.func, frozenset())) == 1
+                    and names <= STATEFUL_CONSTRUCTORS
                 ):
                     targets = (
                         statement.targets

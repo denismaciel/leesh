@@ -4,14 +4,15 @@ from collections.abc import Iterable
 
 from leesh.core import Finding, SourceFile, finding, loaded_names
 from leesh.policy import INNER_LAYERS, Layer
-from leesh.rules.shared.effects import WALL_CLOCK, is_nondeterministic
+from leesh.rules.shared.effects import WALL_CLOCK, is_impure_in_core, is_nondeterministic
 
 
 class NondeterminismRule:
     """Code reads the clock, randomness, or fresh IDs directly.
 
-    Core and port modules may not read any nondeterministic source (`time`,
-    `datetime.now`, `uuid4`, `random`, `secrets`, `os.urandom`); pass the
+    Core and port modules may not read any nondeterministic source
+    (`datetime.now`, `uuid4`, `random`, `secrets`, `os.urandom`) or use the
+    `time` module at all, `time.sleep` and `time.localtime` included; pass the
     observed value in. Elsewhere only wall-clock reads are reported, so time
     flows through one clock you can control in tests. List that clock's modules
     in `workspace.clock_modules`; test modules are exempt. A custom layer with
@@ -24,6 +25,7 @@ class NondeterminismRule:
 
     def check(self, file: SourceFile) -> Iterable[Finding]:
         inner = file.has_layer(*INNER_LAYERS) or file.is_deterministic
+        hidden = is_impure_in_core if file.has_layer(*INNER_LAYERS) else is_nondeterministic
         if not inner and (
             file.layer in (None, Layer.TEST) or file.module in file.workspace.policy.clock_modules
         ):
@@ -44,5 +46,5 @@ class NondeterminismRule:
                 target=", ".join(sorted(names)),
             )
             for node, names in loaded_names(file)
-            if all(is_nondeterministic(name) if inner else name in WALL_CLOCK for name in names)
+            if all(hidden(name) if inner else name in WALL_CLOCK for name in names)
         ]

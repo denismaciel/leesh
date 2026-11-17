@@ -1,4 +1,18 @@
 use super::*;
+const STATEFUL_CONSTRUCTORS: &[&str] = &[
+    "builtins.bytearray",
+    "builtins.dict",
+    "builtins.iter",
+    "builtins.list",
+    "builtins.set",
+    "collections.ChainMap",
+    "collections.Counter",
+    "collections.OrderedDict",
+    "collections.defaultdict",
+    "collections.deque",
+    "itertools.count",
+    "itertools.cycle",
+];
 fn scope(n: &Node) -> Vec<&Node> {
     let mut result = vec![n];
     if !["FunctionDef", "AsyncFunctionDef", "ClassDef", "Lambda"].contains(&kind(n)) {
@@ -63,9 +77,9 @@ pub(super) fn check(file: &Source, out: &mut Vec<Finding>) {
         if ["List", "Dict", "Set", "ListComp", "DictComp", "SetComp"].contains(&kind(v))
             || kind(v) == "Call"
                 && ns.len() == 1
-                && ns.iter().all(|n| {
-                    ["builtins.list", "builtins.dict", "builtins.set"].contains(&n.as_str())
-                })
+                && ns
+                    .iter()
+                    .all(|n| STATEFUL_CONSTRUCTORS.contains(&n.as_str()))
         {
             let targets = if kind(st) == "Assign" {
                 items(st, "targets").iter().collect()
@@ -80,7 +94,7 @@ pub(super) fn check(file: &Source, out: &mut Vec<Finding>) {
         }
     }
     for n in nodes {
-        if ["Name", "Attribute"].contains(&kind(n)) && kind(child(n, "ctx")) == "Load" {
+        if loaded(file, n) {
             let ns = names(file, n);
             if !ns.is_empty() && ns.iter().all(|n| effects::ambient(n)) {
                 let text = joined(&ns);

@@ -23,7 +23,7 @@ pub(super) fn check(file: &Source, w: &Workspace, out: &mut Vec<Finding>) {
                 "async execution belongs in the shell; the core computes decisions from values",
             );
         }
-        if core && ["Name", "Attribute"].contains(&k) && kind(child(n, "ctx")) == "Load" {
+        if core && loaded(file, n) {
             let ns = names(file, n);
             if !ns.is_empty() && ns.iter().all(|n| effects::asynchronous(n)) {
                 add(
@@ -206,9 +206,9 @@ pub(super) fn check(file: &Source, w: &Workspace, out: &mut Vec<Finding>) {
                 );
             }
         }
-        if inner && k == "ClassDef" {
-            frozen(file, n, out);
-        }
+    }
+    if inner {
+        frozen_values(file, out);
     }
 }
 fn has_bool(n: &Node) -> bool {
@@ -246,31 +246,118 @@ fn exception_names(n: &Node) -> Vec<&str> {
         _ => vec![],
     }
 }
-fn frozen(file: &Source, n: &Node, out: &mut Vec<Finding>) {
+const MUTABLE_TYPES: &[&str] = &[
+    "builtins.bytearray",
+    "builtins.dict",
+    "builtins.list",
+    "builtins.set",
+    "collections.ChainMap",
+    "collections.Counter",
+    "collections.OrderedDict",
+    "collections.abc.MutableMapping",
+    "collections.abc.MutableSequence",
+    "collections.abc.MutableSet",
+    "collections.defaultdict",
+    "collections.deque",
+    "typing.Counter",
+    "typing.DefaultDict",
+    "typing.Deque",
+    "typing.Dict",
+    "typing.List",
+    "typing.MutableMapping",
+    "typing.MutableSequence",
+    "typing.MutableSet",
+    "typing.OrderedDict",
+    "typing.Set",
+];
+fn mutable(syms: &symbols::Symbols, n: &Node) -> bool {
+    symbols::names(syms, n)
+        .iter()
+        .any(|v| MUTABLE_TYPES.contains(&v.as_str()))
+}
+fn only(syms: &symbols::Symbols, n: &Node, name: &str) -> bool {
+    let ns = symbols::names(syms, n);
+    ns.len() == 1 && ns.contains(name)
+}
+/// `field(default_factory=list)` builds a mutable value whatever the annotation says.
+fn mutable_factory(syms: &symbols::Symbols, v: &Node) -> bool {
+    kind(v) == "Call"
+        && only(syms, child(v, "func"), "dataclasses.field")
+        && items(v, "keywords").iter().any(|kw| {
+            let f = child(kw, "value");
+            s(kw, "arg") == "default_factory"
+                && (mutable(syms, f)
+                    || kind(f) == "Lambda"
+                        && ["List", "Dict", "Set", "ListComp", "DictComp", "SetComp"]
+                            .contains(&kind(child(f, "body"))))
+        })
+}
+fn frozen_values(file: &Source, out: &mut Vec<Finding>) {
+    let parsed = capabilities::parsed_annotations(file, "AnnAssign");
+    let (tree, syms) = match &parsed {
+        Some((tree, syms)) => (tree, syms),
+        None => (&file.tree, &file.symbols),
+    };
+    let nodes = walk(tree);
+    let initializing = nodes
+        .iter()
+        .filter(|n| kind(n) == "FunctionDef" && s(n, "name") == "__post_init__")
+        .flat_map(|n| walk(n))
+        .map(ast::id)
+        .collect::<HashSet<_>>();
+    for n in nodes {
+        if kind(n) == "Call"
+            && !initializing.contains(&ast::id(n))
+            && (only(syms, child(n, "func"), "builtins.object.__setattr__")
+                || only(syms, child(n, "func"), "builtins.object.__delattr__"))
+            && items(n, "args")
+                .first()
+                .is_some_and(|a| kind(a) == "Name" && s(a, "id") == "self")
+        {
+            add(
+                out,
+                file,
+                n,
+                "LIT205",
+                "object.__setattr__ writes to a frozen record; return a replacement value instead",
+            );
+        }
+        if kind(n) == "ClassDef" {
+            frozen(file, syms, n, out);
+        }
+    }
+}
+fn frozen(file: &Source, syms: &symbols::Symbols, n: &Node, out: &mut Vec<Finding>) {
     let ds = items(n, "decorator_list")
         .iter()
         .filter(|d| {
-            names(
-                file,
+            only(
+                syms,
                 if kind(d) == "Call" {
                     child(d, "func")
                 } else {
                     d
                 },
-            ) == BTreeSet::from(["dataclasses.dataclass".into()])
+                "dataclasses.dataclass",
+            )
         })
         .collect::<Vec<_>>();
-    if ds.is_empty() {
+    let named_tuple = items(n, "bases")
+        .iter()
+        .any(|b| only(syms, b, "typing.NamedTuple"));
+    if ds.is_empty() && !named_tuple {
         return;
     }
-    if !ds.iter().any(|d| {
-        kind(d) == "Call"
-            && items(d, "keywords").iter().any(|kw| {
-                s(kw, "arg") == "frozen"
-                    && kind(child(kw, "value")) == "Constant"
-                    && child(kw, "value").get("value").and_then(Node::as_bool) == Some(true)
-            })
-    }) {
+    if !ds.is_empty()
+        && !ds.iter().any(|d| {
+            kind(d) == "Call"
+                && items(d, "keywords").iter().any(|kw| {
+                    s(kw, "arg") == "frozen"
+                        && kind(child(kw, "value")) == "Constant"
+                        && child(kw, "value").get("value").and_then(Node::as_bool) == Some(true)
+                })
+        })
+    {
         add(
             out,
             file,
@@ -284,30 +371,14 @@ fn frozen(file: &Source, n: &Node, out: &mut Vec<Finding>) {
             continue;
         }
         let a = child(st, "annotation");
-        if kind(a) == "Subscript"
-            && names(file, child(a, "value")) == BTreeSet::from(["typing.ClassVar".into()])
-        {
+        if kind(a) == "Subscript" && only(syms, child(a, "value"), "typing.ClassVar") {
             continue;
         }
-        if walk(a).iter().any(|a| {
-            names(file, a).iter().any(|v| {
-                [
-                    "builtins.list",
-                    "builtins.dict",
-                    "builtins.set",
-                    "typing.List",
-                    "typing.Dict",
-                    "typing.Set",
-                    "typing.MutableMapping",
-                    "typing.MutableSequence",
-                    "typing.MutableSet",
-                    "collections.abc.MutableMapping",
-                    "collections.abc.MutableSequence",
-                    "collections.abc.MutableSet",
-                ]
-                .contains(&v.as_str())
-            })
-        }) {
+        if capabilities::annotation_nodes(a, syms)
+            .iter()
+            .any(|a| mutable(syms, a))
+            || mutable_factory(syms, child(st, "value"))
+        {
             add(
                 out,
                 file,

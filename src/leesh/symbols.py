@@ -10,6 +10,7 @@ from types import MappingProxyType
 from leesh.imports import absolute_module
 
 UNKNOWN = frozenset({"?"})
+GETATTR = frozenset({"builtins.getattr"})
 # Longer strings are prose, not forward references.
 MAX_ANNOTATION = 200
 BUILTIN_CLASSES = frozenset(
@@ -25,7 +26,13 @@ BUILTINS = BUILTIN_CLASSES | frozenset(
         "delattr",
         "eval",
         "exec",
+        "compile",
         "__import__",
+        "globals",
+        "locals",
+        "breakpoint",
+        "sorted",
+        "iter",
     }
 )
 INSTANCE_FACTORIES = MappingProxyType(
@@ -133,7 +140,16 @@ class _Resolver(ast.NodeVisitor):
                 f"{name}.{node.attr}" if name != "?" else "?" for name in self.names(node.value)
             )
         if isinstance(node, ast.Call):
-            return frozenset(INSTANCE_FACTORIES.get(name, name) for name in self.names(node.func))
+            function = self.names(node.func)
+            if function == GETATTR and len(node.args) >= 2:
+                attribute = node.args[1]
+                if isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
+                    # A literal name is an attribute read spelled differently.
+                    return frozenset(
+                        f"{name}.{attribute.value}" if name != "?" else "?"
+                        for name in self.names(node.args[0])
+                    )
+            return frozenset(INSTANCE_FACTORIES.get(name, name) for name in function)
         if isinstance(node, ast.Subscript):
             return self.names(node.value)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):

@@ -15,9 +15,10 @@
 | [LIT202](#lit202) | `io-in-core` | Core or port code performs I/O. |
 | [LIT203](#lit203) | `ambient-state` | Core or port code reads or writes state it was not given. |
 | [LIT204](#lit204) | `borrowed-mutation` | Core or port code mutates a value it received as an argument. |
-| [LIT205](#lit205) | `frozen-values` | A core or port dataclass is mutable. |
+| [LIT205](#lit205) | `frozen-values` | A core or port record is mutable. |
 | [LIT206](#lit206) | `async-in-core` | Core code awaits or schedules concurrent work. |
 | [LIT207](#lit207) | `effectful-capability` | A core function takes a parameter that can perform effects. |
+| [LIT208](#lit208) | `dynamic-code` | Core or port code runs code or loads modules chosen at run time. |
 | [LIT301](#lit301) | `environment-access` | Code outside the edges reads environment variables. |
 | [LIT302](#lit302) | `transaction-boundary` | Code outside a transaction boundary calls `commit()` or `rollback()`. |
 | [LIT303](#lit303) | `router-construction` | A router constructs its own infrastructure. |
@@ -121,8 +122,9 @@ Core and port code computes from values it is given.
 
 `nondeterminism`: Code reads the clock, randomness, or fresh IDs directly.
 
-Core and port modules may not read any nondeterministic source (`time`,
-`datetime.now`, `uuid4`, `random`, `secrets`, `os.urandom`); pass the
+Core and port modules may not read any nondeterministic source
+(`datetime.now`, `uuid4`, `random`, `secrets`, `os.urandom`) or use the
+`time` module at all, `time.sleep` and `time.localtime` included; pass the
 observed value in. Elsewhere only wall-clock reads are reported, so time
 flows through one clock you can control in tests. List that clock's modules
 in `workspace.clock_modules`; test modules are exempt. A custom layer with
@@ -144,7 +146,8 @@ shell and pass the result into the core.
 
 Reports process-wide context (working directory, locale, decimal context,
 context variables), writes through `global`/`nonlocal`, and reads of
-mutable module-level collections. Pass the value in and return the new
+mutable module-level collections and iterators (`[]`, `defaultdict()`,
+`deque()`, `itertools.count()`). Pass the value in and return the new
 state instead. Environment variables are covered by LIT301.
 
 ### LIT204
@@ -153,17 +156,26 @@ state instead. Environment variables are covered by LIT301.
 
 Tracks parameters, and aliases of them, through assignment, item and
 attribute stores, `del`, augmented assignment, and mutating methods of
-lists, dicts and sets. Build and return a new value instead; the caller
-owns what it passed in.
+lists, dicts, sets and deques. Elements stay borrowed through loops,
+`enumerate`, `zip`, `sorted`, `.values()`, `.items()`, `.get()`, and shallow
+copies (`copy.copy`, `dataclasses.replace`, `.copy()`). On a value of unknown
+type, a mutator such as `append` or `update` counts when its result is
+discarded. Build and return a new value instead; the caller owns what it
+passed in.
 
 ### LIT205
 
-`frozen-values`: A core or port dataclass is mutable.
+`frozen-values`: A core or port record is mutable.
 
-Dataclasses must be declared with `frozen=True`, and their fields may not be
-annotated with mutable collections (`list`, `dict`, `set`, or the `typing`
-and `collections.abc` mutable protocols). `ClassVar` fields are exempt. Use
-tuples, frozensets, or read-only `Mapping`/`Sequence` interfaces.
+Dataclasses must be declared with `frozen=True`. Their fields, and those
+of a `NamedTuple`, may not be annotated with mutable collections (`list`,
+`dict`, `set`, `bytearray`, `deque`, `defaultdict`, `OrderedDict`,
+`Counter`, `ChainMap`, or the `typing` and `collections.abc` mutable
+protocols), in string annotations too, or built by a `default_factory`
+that returns one. `object.__setattr__(self, ...)` writes to a frozen record
+and is reported outside `__post_init__`, where it sets derived fields.
+`ClassVar` fields are exempt. Use tuples, frozensets, or read-only
+`Mapping`/`Sequence` interfaces.
 
 ### LIT206
 
@@ -183,6 +195,18 @@ when it imports nothing. Types are matched by exact resolved name, through
 aliases, unions, `Optional`, `Annotated` and string annotations. Add your own
 with `workspace.effectful_types`. Ports are exempt because they describe
 effectful collaborators.
+
+### LIT208
+
+`dynamic-code`: Core or port code runs code or loads modules chosen at run time.
+
+`eval`, `exec`, `compile`, `__import__`, `importlib.import_module`,
+`globals`, `locals`, `breakpoint`, and `pickle`, `marshal`, `shelve` and
+`runpy` execute or reach code no other rule can see, so one call undoes
+every purity rule. Import the module and call the function by name; parse
+serialized data at a boundary. `getattr` with a literal name is read as the
+attribute it spells, so `getattr(os, "environ")` is reported like
+`os.environ`.
 
 ## Edges
 

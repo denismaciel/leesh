@@ -37,7 +37,7 @@
   {
     "code": "LIT201",
     "name": "nondeterminism",
-    "documentation": "Code reads the clock, randomness, or fresh IDs directly.\n\nCore and port modules may not read any nondeterministic source (`time`,\n`datetime.now`, `uuid4`, `random`, `secrets`, `os.urandom`); pass the\nobserved value in. Elsewhere only wall-clock reads are reported, so time\nflows through one clock you can control in tests. List that clock's modules\nin `workspace.clock_modules`; test modules are exempt. A custom layer with\n`deterministic = true`, such as Temporal workflow code, is held to the core\nstandard."
+    "documentation": "Code reads the clock, randomness, or fresh IDs directly.\n\nCore and port modules may not read any nondeterministic source\n(`datetime.now`, `uuid4`, `random`, `secrets`, `os.urandom`) or use the\n`time` module at all, `time.sleep` and `time.localtime` included; pass the\nobserved value in. Elsewhere only wall-clock reads are reported, so time\nflows through one clock you can control in tests. List that clock's modules\nin `workspace.clock_modules`; test modules are exempt. A custom layer with\n`deterministic = true`, such as Temporal workflow code, is held to the core\nstandard."
   },
   {
     "code": "LIT202",
@@ -47,17 +47,17 @@
   {
     "code": "LIT203",
     "name": "ambient-state",
-    "documentation": "Core or port code reads or writes state it was not given.\n\nReports process-wide context (working directory, locale, decimal context,\ncontext variables), writes through `global`/`nonlocal`, and reads of\nmutable module-level collections. Pass the value in and return the new\nstate instead. Environment variables are covered by LIT301."
+    "documentation": "Core or port code reads or writes state it was not given.\n\nReports process-wide context (working directory, locale, decimal context,\ncontext variables), writes through `global`/`nonlocal`, and reads of\nmutable module-level collections and iterators (`[]`, `defaultdict()`,\n`deque()`, `itertools.count()`). Pass the value in and return the new\nstate instead. Environment variables are covered by LIT301."
   },
   {
     "code": "LIT204",
     "name": "borrowed-mutation",
-    "documentation": "Core or port code mutates a value it received as an argument.\n\nTracks parameters, and aliases of them, through assignment, item and\nattribute stores, `del`, augmented assignment, and mutating methods of\nlists, dicts and sets. Build and return a new value instead; the caller\nowns what it passed in."
+    "documentation": "Core or port code mutates a value it received as an argument.\n\nTracks parameters, and aliases of them, through assignment, item and\nattribute stores, `del`, augmented assignment, and mutating methods of\nlists, dicts, sets and deques. Elements stay borrowed through loops,\n`enumerate`, `zip`, `sorted`, `.values()`, `.items()`, `.get()`, and shallow\ncopies (`copy.copy`, `dataclasses.replace`, `.copy()`). On a value of unknown\ntype, a mutator such as `append` or `update` counts when its result is\ndiscarded. Build and return a new value instead; the caller owns what it\npassed in."
   },
   {
     "code": "LIT205",
     "name": "frozen-values",
-    "documentation": "A core or port dataclass is mutable.\n\nDataclasses must be declared with `frozen=True`, and their fields may not be\nannotated with mutable collections (`list`, `dict`, `set`, or the `typing`\nand `collections.abc` mutable protocols). `ClassVar` fields are exempt. Use\ntuples, frozensets, or read-only `Mapping`/`Sequence` interfaces."
+    "documentation": "A core or port record is mutable.\n\nDataclasses must be declared with `frozen=True`. Their fields, and those\nof a `NamedTuple`, may not be annotated with mutable collections (`list`,\n`dict`, `set`, `bytearray`, `deque`, `defaultdict`, `OrderedDict`,\n`Counter`, `ChainMap`, or the `typing` and `collections.abc` mutable\nprotocols), in string annotations too, or built by a `default_factory`\nthat returns one. `object.__setattr__(self, ...)` writes to a frozen record\nand is reported outside `__post_init__`, where it sets derived fields.\n`ClassVar` fields are exempt. Use tuples, frozensets, or read-only\n`Mapping`/`Sequence` interfaces."
   },
   {
     "code": "LIT206",
@@ -68,6 +68,11 @@
     "code": "LIT207",
     "name": "effectful-capability",
     "documentation": "A core function takes a parameter that can perform effects.\n\nDatabase sessions and connections, HTTP clients, file objects and\nfilesystems are capabilities: a function that receives one can do I/O even\nwhen it imports nothing. Types are matched by exact resolved name, through\naliases, unions, `Optional`, `Annotated` and string annotations. Add your own\nwith `workspace.effectful_types`. Ports are exempt because they describe\neffectful collaborators."
+  },
+  {
+    "code": "LIT208",
+    "name": "dynamic-code",
+    "documentation": "Core or port code runs code or loads modules chosen at run time.\n\n`eval`, `exec`, `compile`, `__import__`, `importlib.import_module`,\n`globals`, `locals`, `breakpoint`, and `pickle`, `marshal`, `shelve` and\n`runpy` execute or reach code no other rule can see, so one call undoes\nevery purity rule. Import the module and call the function by name; parse\nserialized data at a boundary. `getattr` with a literal name is read as the\nattribute it spells, so `getattr(os, \"environ\")` is reported like\n`os.environ`."
   },
   {
     "code": "LIT301",

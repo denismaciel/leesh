@@ -49,13 +49,13 @@ fn normalize(n: &mut Node) {
     }
     nested(n).for_each(normalize)
 }
-fn rewrite(n: &mut Node) {
-    if kind(n) == "arg"
+fn rewrite(n: &mut Node, owner: &str) {
+    if kind(n) == owner
         && let Some(a) = n.get_mut("annotation")
     {
         normalize(a)
     }
-    nested(n).for_each(rewrite)
+    nested(n).for_each(|n| rewrite(n, owner))
 }
 fn reid(n: &mut Node, c: &mut usize) {
     if n.is_node() {
@@ -66,7 +66,27 @@ fn reid(n: &mut Node, c: &mut usize) {
         reid(v, c)
     }
 }
-fn annotation_nodes<'a>(n: &'a Node, symbols: &symbols::Symbols) -> Vec<&'a Node> {
+/// A private tree with the forward annotations of `owner` nodes parsed, if there are any.
+pub(super) fn parsed_annotations(file: &Source, owner: &str) -> Option<(Node, symbols::Symbols)> {
+    let has_strings = walk(&file.tree)
+        .into_iter()
+        .filter(|n| kind(n) == owner)
+        .any(|a| {
+            walk(child(a, "annotation"))
+                .into_iter()
+                .any(|n| kind(n) == "Constant" && n["value"].is_string())
+        });
+    if !has_strings {
+        return None;
+    }
+    let mut tree = file.tree.clone();
+    rewrite(&mut tree, owner);
+    reid(&mut tree, &mut 1);
+    let resolved = symbols::resolve(&tree, file.package.as_deref());
+    Some((tree, resolved))
+}
+/// Type expressions in an annotation: not `Literal` values or `Annotated` metadata.
+pub(super) fn annotation_nodes<'a>(n: &'a Node, symbols: &symbols::Symbols) -> Vec<&'a Node> {
     let mut out = vec![n];
     if kind(n) == "Subscript" {
         let ns = symbols::names(symbols, child(n, "value"));
@@ -99,25 +119,10 @@ pub(super) fn check(file: &Source, w: &Workspace, out: &mut Vec<Finding>) {
     if !file.has_layer(&["core"]) {
         return;
     }
-    let has_strings = walk(&file.tree)
-        .into_iter()
-        .filter(|n| kind(n) == "arg")
-        .any(|a| {
-            walk(child(a, "annotation"))
-                .into_iter()
-                .any(|n| kind(n) == "Constant" && n["value"].is_string())
-        });
-    let rewritten;
-    let resolved;
-    let (tree, syms) = if has_strings {
-        let mut tree = file.tree.clone();
-        rewrite(&mut tree);
-        reid(&mut tree, &mut 1);
-        resolved = symbols::resolve(&tree, file.package.as_deref());
-        rewritten = tree;
-        (&rewritten, &resolved)
-    } else {
-        (&file.tree, &file.symbols)
+    let parsed = parsed_annotations(file, "arg");
+    let (tree, syms) = match &parsed {
+        Some((tree, syms)) => (tree, syms),
+        None => (&file.tree, &file.symbols),
     };
     for a in walk(tree) {
         if kind(a) != "arg" || child(a, "annotation").is_null() {

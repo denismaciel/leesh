@@ -10,7 +10,7 @@ from typing import Protocol
 
 from leesh.imports import package_name
 from leesh.policy import Layer
-from leesh.symbols import module_symbols
+from leesh.symbols import GETATTR, module_symbols
 from leesh.workspace import Classification, Workspace
 
 
@@ -108,11 +108,16 @@ def finding(
 
 
 def loaded_names(file: SourceFile) -> Iterable[tuple[ast.expr, frozenset[str]]]:
-    """Resolved names the file reads, e.g. ``os.getenv`` behind any alias."""
+    """Resolved names the file reads, e.g. ``os.getenv`` behind any alias or ``getattr``."""
+    symbols = file.symbols
     return (
         (node, names)
-        for node, names in file.symbols.items()
-        if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load) and names
+        for node, names in symbols.items()
+        if names
+        and (
+            (isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load))
+            or (isinstance(node, ast.Call) and symbols.get(node.func) == GETATTR)
+        )
     )
 
 

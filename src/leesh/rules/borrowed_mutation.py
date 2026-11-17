@@ -30,6 +30,34 @@ MUTATORS = MappingProxyType(
                 }
             )
         ),
+        "collections.deque": frozenset(
+            {
+                "append",
+                "appendleft",
+                "clear",
+                "extend",
+                "extendleft",
+                "insert",
+                "pop",
+                "popleft",
+                "remove",
+                "reverse",
+                "rotate",
+            }
+        ),
+    }
+)
+ANY_MUTATOR = frozenset().union(*MUTATORS.values())
+# Calls whose result still holds the first argument's members.
+SHALLOW_COPIES = frozenset({"copy.copy", "dataclasses.replace"})
+ELEMENT_VIEWS = frozenset(
+    {
+        "builtins.enumerate",
+        "builtins.filter",
+        "builtins.iter",
+        "builtins.reversed",
+        "builtins.sorted",
+        "builtins.zip",
     }
 )
 TYPE_ALIASES = MappingProxyType(
@@ -43,6 +71,13 @@ TYPE_ALIASES = MappingProxyType(
         "collections.abc.MutableMapping": "builtins.dict",
         "typing.MutableSet": "builtins.set",
         "collections.abc.MutableSet": "builtins.set",
+        "collections.Counter": "builtins.dict",
+        "collections.OrderedDict": "builtins.dict",
+        "collections.defaultdict": "builtins.dict",
+        "typing.Counter": "builtins.dict",
+        "typing.DefaultDict": "builtins.dict",
+        "typing.OrderedDict": "builtins.dict",
+        "typing.Deque": "collections.deque",
     }
 )
 
@@ -88,13 +123,28 @@ class _MutationVisitor(ast.NodeVisitor):
             return _Origin(members=next(iter(roots)) if len(roots) == 1 else None, kind=kind)
         if isinstance(node, ast.Call):
             names = self.symbols.get(node.func, frozenset())
-            if len(names) == 1 and (kind := next(iter(names))) in MUTATORS:
+            name = next(iter(names)) if len(names) == 1 else None
+            if name in MUTATORS:
                 source = self.origin(node.args[0]) if node.args else _Origin()
-                return _Origin(members=source.borrowed or source.members, kind=kind)
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "copy":
+                return _Origin(members=source.borrowed or source.members, kind=name)
+            if name in SHALLOW_COPIES and node.args:
+                source = self.origin(node.args[0])
+                return _Origin(members=source.borrowed or source.members, kind=source.kind)
+            if name in ELEMENT_VIEWS:
+                sources = [self.origin(argument) for argument in node.args]
+                roots = {source.borrowed or source.members for source in sources} - {None}
+                return _Origin(members=next(iter(roots)) if len(roots) == 1 else None)
+            if isinstance(node.func, ast.Attribute):
                 source = self.origin(node.func.value)
-                if source.kind in MUTATORS:
-                    return _Origin(members=source.borrowed or source.members, kind=source.kind)
+                root = source.borrowed or source.members
+                if node.func.attr == "copy":
+                    return _Origin(
+                        members=root, kind=source.kind if source.kind in MUTATORS else None
+                    )
+                if node.func.attr in {"items", "values"}:
+                    return _Origin(members=root)
+                if node.func.attr == "get":
+                    return _Origin(borrowed=root)
         return _Origin()
 
     def report(self, node: ast.AST, origin: _Origin) -> None:
@@ -153,6 +203,15 @@ class _MutationVisitor(ast.NodeVisitor):
         for target in node.targets:
             self.write(target)
             self.bind(target, _Origin())
+
+    def visit_Expr(self, node: ast.Expr) -> None:
+        # A discarded result means the call was made for its effect on the receiver.
+        call = node.value
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute):
+            origin = self.origin(call.func.value)
+            if origin.kind is None and call.func.attr in ANY_MUTATOR:
+                self.report(call, origin)
+        self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Attribute):
@@ -260,8 +319,12 @@ class BorrowedMutationRule:
 
     Tracks parameters, and aliases of them, through assignment, item and
     attribute stores, `del`, augmented assignment, and mutating methods of
-    lists, dicts and sets. Build and return a new value instead; the caller
-    owns what it passed in.
+    lists, dicts, sets and deques. Elements stay borrowed through loops,
+    `enumerate`, `zip`, `sorted`, `.values()`, `.items()`, `.get()`, and shallow
+    copies (`copy.copy`, `dataclasses.replace`, `.copy()`). On a value of unknown
+    type, a mutator such as `append` or `update` counts when its result is
+    discarded. Build and return a new value instead; the caller owns what it
+    passed in.
     """
 
     code = "LIT204"

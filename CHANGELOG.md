@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.22.0
+
+### Rules
+
+- **LIT208 `dynamic-code` (new).** Core and port code may not call `eval`,
+  `exec`, `compile`, `__import__`, `importlib.import_module`, `globals`,
+  `locals`, `breakpoint`, or use `pickle`, `marshal`, `shelve` and `runpy`.
+- **`getattr` with a literal name is read as the attribute.**
+  `getattr(os, "environ")` and `getattr(time, "time")` are reported like
+  `os.environ` and `time.time` by every rule that resolves names.
+- **LIT202 treats `os` and `sys` as effectful by default.** Everything under
+  them is I/O in core and port code except pure path arithmetic
+  (`os.path.join`, `os.sep`, `os.fspath`, ...) and interpreter constants
+  (`sys.maxsize`, `sys.version_info`, ...). `os.rmdir`, `os.getpid`,
+  `os.path.exists`, `sys.argv`, `sys.path`, `sys.modules` and a bare
+  `sys.stdin` are now reported.
+- **LIT201 bans the `time` module in core and port code**, including
+  `time.sleep`, `time.localtime` and `time.strftime`. `time.struct_time` stays
+  legal. Deterministic custom layers are unchanged.
+- **LIT203 counts more module state:** `defaultdict()`, `deque()`,
+  `Counter()`, `OrderedDict()`, `ChainMap()`, `bytearray()`, `iter()`,
+  `itertools.count()` and `itertools.cycle()` bound at module level.
+- **LIT204 follows elements and shallow copies.** Values stay borrowed through
+  `enumerate`, `zip`, `sorted`, `reversed`, `filter`, `.values()`, `.items()`,
+  `.get()`, `copy.copy`, `dataclasses.replace` and `.copy()`. Deques and
+  `defaultdict`/`OrderedDict`/`Counter` parameters have known mutators. On a
+  value of unknown type, a mutator such as `append` or `update` is reported
+  when its result is discarded, so `order.lines.append(x)` and an untyped
+  `items.append(x)` no longer pass.
+- **LIT205 sees hidden mutable fields:** compound string annotations
+  (`"dict[str, int] | None"`), `deque`, `defaultdict`, `OrderedDict`,
+  `Counter`, `ChainMap`, `bytearray`, `NamedTuple` fields, and
+  `field(default_factory=list)`. `object.__setattr__(self, ...)` is reported
+  outside `__post_init__`. `Literal["list"]` values and `Annotated` metadata
+  are no longer mistaken for types.
+- **LIT305 checks lambda defaults.**
+
+### Upgrading
+
+- Every change above can add findings. Run `leesh report`, then fix them or
+  run `leesh baseline` to record them.
+
 ## 0.21.0
 
 - Complete the Leesh rename: `leesh` Python module, CLI, native executable,

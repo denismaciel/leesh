@@ -140,6 +140,78 @@ AMBIENT = frozenset(
         "contextvars.copy_context",
     }
 )
+# Everything else under `os` and `sys` reaches the process or the filesystem.
+PURE_OS = (
+    "os.PathLike",
+    "os.altsep",
+    "os.curdir",
+    "os.devnull",
+    "os.extsep",
+    "os.fsdecode",
+    "os.fsencode",
+    "os.fspath",
+    "os.linesep",
+    "os.name",
+    "os.pardir",
+    "os.pathsep",
+    "os.sep",
+)
+PURE_OS_PATH = frozenset(
+    {
+        "altsep",
+        "basename",
+        "commonpath",
+        "commonprefix",
+        "curdir",
+        "devnull",
+        "dirname",
+        "extsep",
+        "isabs",
+        "join",
+        "normcase",
+        "normpath",
+        "pardir",
+        "pathsep",
+        "sep",
+        "split",
+        "splitdrive",
+        "splitext",
+        "splitroot",
+    }
+)
+PURE_SYS = (
+    "sys.byteorder",
+    "sys.exc_info",
+    "sys.float_info",
+    "sys.hash_info",
+    "sys.implementation",
+    "sys.int_info",
+    "sys.intern",
+    "sys.maxsize",
+    "sys.maxunicode",
+    "sys.platform",
+    "sys.version",
+    "sys.version_info",
+)
+DYNAMIC = frozenset(
+    {
+        "builtins.__import__",
+        "builtins.breakpoint",
+        "builtins.compile",
+        "builtins.eval",
+        "builtins.exec",
+        "builtins.globals",
+        "builtins.locals",
+        "importlib.__import__",
+        "importlib.import_module",
+        "importlib.reload",
+    }
+)
+DYNAMIC_MODULES = ("marshal.", "pickle.", "runpy.", "shelve.")
+
+
+def _under(name: str, roots: tuple[str, ...]) -> bool:
+    return any(name == root or name.startswith(f"{root}.") for root in roots)
 
 
 def is_nondeterministic(name: str) -> bool:
@@ -149,6 +221,17 @@ def is_nondeterministic(name: str) -> bool:
         or (module == "random" and member in RANDOM_APIS)
         or (module == "secrets" and member in SECRETS_APIS)
     )
+
+
+def is_impure_in_core(name: str) -> bool:
+    """Core and port code may not touch `time` at all: sleeping and local time included."""
+    return is_nondeterministic(name) or (
+        name.startswith("time.") and not _under(name, ("time.struct_time",))
+    )
+
+
+def is_dynamic(name: str) -> bool:
+    return name in DYNAMIC or name.startswith(DYNAMIC_MODULES)
 
 
 def is_environment(name: str) -> bool:
@@ -192,32 +275,19 @@ def is_io(name: str) -> bool:
             and member in LOG_METHODS
         )
         or name.startswith(("urllib.request.", "shutil.", "tempfile."))
-        or (
-            module == "os"
-            and member
-            in {
-                "open",
-                "read",
-                "write",
-                "stat",
-                "listdir",
-                "scandir",
-                "walk",
-                "remove",
-                "unlink",
-                "mkdir",
-                "makedirs",
-                "rename",
-                "replace",
-                "system",
-                "popen",
-                "fork",
-                "kill",
-            }
-        )
-        or (module == "sys" and member in {"exit", "settrace", "setprofile"})
-        or name.startswith(("sys.stdout.", "sys.stderr.", "sys.stdin."))
+        or _impure_os(name)
+        or (name.startswith("sys.") and not _under(name, PURE_SYS))
     )
+
+
+def _impure_os(name: str) -> bool:
+    """Environment, ambient state and randomness under `os` belong to other rules."""
+    if not name.startswith("os.") or is_environment(name) or is_ambient(name):
+        return False
+    if name == "os.urandom" or _under(name, PURE_OS):
+        return False
+    parts = name.split(".")
+    return parts[1] != "path" or (len(parts) > 2 and parts[2] not in PURE_OS_PATH)
 
 
 def is_async_effect(name: str) -> bool:

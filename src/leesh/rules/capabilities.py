@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable, Mapping
-from copy import deepcopy
+from collections.abc import Iterable
 
 from leesh.core import Finding, SourceFile, finding
 from leesh.policy import Layer
-from leesh.symbols import resolved_symbols
+from leesh.rules.shared.annotations import annotation_nodes, parsed_annotations
 
 # Exact public type identities, never suffix or parameter-name heuristics.
 EFFECTFUL_TYPES = frozenset(
@@ -41,38 +40,6 @@ EFFECTFUL_TYPES = frozenset(
 )
 
 
-class _AnnotationStrings(ast.NodeTransformer):
-    def visit_Constant(self, node: ast.Constant) -> ast.AST:
-        if isinstance(node.value, str):
-            try:
-                parsed = ast.parse(node.value, mode="eval").body
-            except SyntaxError:
-                return node
-            # Avoid recursion on quoted string literals.
-            if not isinstance(parsed, ast.Constant):
-                rewritten = self.visit(parsed)
-                if isinstance(rewritten, ast.AST):
-                    return ast.copy_location(rewritten, node)
-        return node
-
-
-def _annotation_nodes(
-    node: ast.AST, symbols: Mapping[ast.expr, frozenset[str]]
-) -> Iterable[ast.expr]:
-    if isinstance(node, ast.expr):
-        yield node
-    if isinstance(node, ast.Subscript):
-        names = symbols.get(node.value, frozenset())
-        if names & {"typing.Literal", "typing_extensions.Literal"}:
-            return
-        if names & {"typing.Annotated", "typing_extensions.Annotated"}:
-            first = node.slice.elts[0] if isinstance(node.slice, ast.Tuple) else node.slice
-            yield from _annotation_nodes(first, symbols)
-            return
-    for child in ast.iter_child_nodes(node):
-        yield from _annotation_nodes(child, symbols)
-
-
 class EffectfulCapabilityRule:
     """A core function takes a parameter that can perform effects.
 
@@ -90,12 +57,7 @@ class EffectfulCapabilityRule:
     def check(self, file: SourceFile) -> Iterable[Finding]:
         if not file.has_layer(Layer.CORE):
             return []
-        # Normalize forward annotations on a private tree; snapshot ASTs stay untouched.
-        tree = deepcopy(file.tree)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.arg) and node.annotation is not None:
-                node.annotation = _AnnotationStrings().visit(node.annotation)
-        symbols = resolved_symbols(tree, file.package)
+        tree, symbols = parsed_annotations(file, ast.arg)
         known = EFFECTFUL_TYPES | file.workspace.policy.effectful_types
         findings: list[Finding] = []
         for node in ast.walk(tree):
@@ -103,7 +65,7 @@ class EffectfulCapabilityRule:
                 continue
             matches = {
                 name
-                for part in _annotation_nodes(node.annotation, symbols)
+                for part in annotation_nodes(node.annotation, symbols)
                 if (names := symbols.get(part, frozenset())) and names <= known
                 for name in names
             }

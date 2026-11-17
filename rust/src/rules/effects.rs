@@ -162,6 +162,95 @@ pub const TRANSACTION_PACKAGES: &[&str] = &[
     "sqlmodel",
     "tortoise",
 ];
+pub const PURE_OS: &[&str] = &[
+    "os.PathLike",
+    "os.altsep",
+    "os.curdir",
+    "os.devnull",
+    "os.extsep",
+    "os.fsdecode",
+    "os.fsencode",
+    "os.fspath",
+    "os.linesep",
+    "os.name",
+    "os.pardir",
+    "os.pathsep",
+    "os.sep",
+];
+pub const PURE_OS_PATH: &[&str] = &[
+    "altsep",
+    "basename",
+    "commonpath",
+    "commonprefix",
+    "curdir",
+    "devnull",
+    "dirname",
+    "extsep",
+    "isabs",
+    "join",
+    "normcase",
+    "normpath",
+    "pardir",
+    "pathsep",
+    "sep",
+    "split",
+    "splitdrive",
+    "splitext",
+    "splitroot",
+];
+pub const PURE_SYS: &[&str] = &[
+    "sys.byteorder",
+    "sys.exc_info",
+    "sys.float_info",
+    "sys.hash_info",
+    "sys.implementation",
+    "sys.int_info",
+    "sys.intern",
+    "sys.maxsize",
+    "sys.maxunicode",
+    "sys.platform",
+    "sys.version",
+    "sys.version_info",
+];
+pub const DYNAMIC: &[&str] = &[
+    "builtins.__import__",
+    "builtins.breakpoint",
+    "builtins.compile",
+    "builtins.eval",
+    "builtins.exec",
+    "builtins.globals",
+    "builtins.locals",
+    "importlib.__import__",
+    "importlib.import_module",
+    "importlib.reload",
+];
+fn under(name: &str, roots: &[&str]) -> bool {
+    roots.iter().any(|root| {
+        name.strip_prefix(root)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+    })
+}
+/// Core and port code may not touch `time` at all: sleeping and local time included.
+pub fn impure_in_core(name: &str) -> bool {
+    nondeterministic(name) || name.starts_with("time.") && !under(name, &["time.struct_time"])
+}
+pub fn dynamic(name: &str) -> bool {
+    DYNAMIC.contains(&name)
+        || ["marshal.", "pickle.", "runpy.", "shelve."]
+            .iter()
+            .any(|p| name.starts_with(p))
+}
+/// Environment, ambient state and randomness under `os` belong to other rules.
+fn impure_os(name: &str) -> bool {
+    if !name.starts_with("os.") || environment(name) || ambient(name) {
+        return false;
+    }
+    if name == "os.urandom" || under(name, PURE_OS) {
+        return false;
+    }
+    let mut parts = name.split('.').skip(1);
+    parts.next() != Some("path") || parts.next().is_some_and(|p| !PURE_OS_PATH.contains(&p))
+}
 pub fn nondeterministic(name: &str) -> bool {
     let (module, member) = name.rsplit_once('.').unwrap_or(("", name));
     NONDETERMINISTIC.contains(&name)
@@ -215,21 +304,9 @@ pub fn io(name: &str) -> bool {
         ]
         .contains(&module)
             && LOG_METHODS.contains(&member)
-        || [
-            "urllib.request.",
-            "shutil.",
-            "tempfile.",
-            "sys.stdout.",
-            "sys.stderr.",
-            "sys.stdin.",
-        ]
-        .iter()
-        .any(|p| name.starts_with(p))
-        || module == "os"
-            && [
-                "open", "read", "write", "stat", "listdir", "scandir", "walk", "remove", "unlink",
-                "mkdir", "makedirs", "rename", "replace", "system", "popen", "fork", "kill",
-            ]
-            .contains(&member)
-        || module == "sys" && ["exit", "settrace", "setprofile"].contains(&member)
+        || ["urllib.request.", "shutil.", "tempfile."]
+            .iter()
+            .any(|p| name.starts_with(p))
+        || impure_os(name)
+        || name.starts_with("sys.") && !under(name, PURE_SYS)
 }

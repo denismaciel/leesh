@@ -185,6 +185,11 @@ def test_lit305_allows_literals_and_exemptions(project: Project, source: str) ->
     assert project.lint(CORE, source) == []
 
 
+def test_lit305_checks_lambda_defaults(project: Project) -> None:
+    assert project.lint(CORE, "collect = lambda item, seen=[]: seen") == ["LIT305"]
+    assert project.lint(CORE, "collect = lambda item, seen=(): seen") == []
+
+
 @pytest.mark.parametrize("path", [ROUTER, "src/example/app/main.py", "tests/test_orders.py"])
 def test_lit305_skips_edge_layers(project: Project, path: str) -> None:
     source = "from fastapi import Depends\ndef endpoint(store=Depends(get_store)): ...\n"

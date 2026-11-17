@@ -22,9 +22,42 @@ fn mutators(k: &str) -> &'static [&'static str] {
             "intersection_update",
             "symmetric_difference_update",
         ],
+        "collections.deque" => &[
+            "append",
+            "appendleft",
+            "clear",
+            "extend",
+            "extendleft",
+            "insert",
+            "pop",
+            "popleft",
+            "remove",
+            "reverse",
+            "rotate",
+        ],
         _ => &[],
     }
 }
+fn any_mutator(attr: &str) -> bool {
+    [
+        "builtins.list",
+        "builtins.dict",
+        "builtins.set",
+        "collections.deque",
+    ]
+    .iter()
+    .any(|k| mutators(k).contains(&attr))
+}
+// Calls whose result still holds the first argument's members.
+const SHALLOW_COPIES: &[&str] = &["copy.copy", "dataclasses.replace"];
+const ELEMENT_VIEWS: &[&str] = &[
+    "builtins.enumerate",
+    "builtins.filter",
+    "builtins.iter",
+    "builtins.reversed",
+    "builtins.sorted",
+    "builtins.zip",
+];
 struct Visitor<'a> {
     file: &'a Source,
     aliases: HashMap<String, Origin>,
@@ -68,30 +101,66 @@ impl Visitor<'_> {
             "Call" => {
                 let f = child(n, "func");
                 let ns = names(self.file, f);
-                if ns.len() == 1 && ns.first().is_some_and(|s| !mutators(s).is_empty()) {
-                    let source = items(n, "args")
-                        .first()
-                        .map(|n| self.origin(n))
-                        .unwrap_or_default();
+                let name = if ns.len() == 1 {
+                    ns.first().map(String::as_str).unwrap_or("")
+                } else {
+                    ""
+                };
+                let first = items(n, "args").first();
+                if !mutators(name).is_empty() {
+                    let source = first.map(|n| self.origin(n)).unwrap_or_default();
                     Origin {
                         members: source.borrowed.or(source.members),
-                        kind: ns.first().cloned(),
+                        kind: Some(name.into()),
                         ..Origin::default()
                     }
-                } else if kind(f) == "Attribute" && s(f, "attr") == "copy" {
+                } else if SHALLOW_COPIES.contains(&name)
+                    && let Some(first) = first
+                {
+                    let source = self.origin(first);
+                    Origin {
+                        members: source.borrowed.or(source.members),
+                        kind: source.kind,
+                        ..Origin::default()
+                    }
+                } else if ELEMENT_VIEWS.contains(&name) {
+                    let roots = items(n, "args")
+                        .iter()
+                        .filter_map(|a| {
+                            let source = self.origin(a);
+                            source.borrowed.or(source.members)
+                        })
+                        .collect::<BTreeSet<_>>();
+                    Origin {
+                        members: if roots.len() == 1 {
+                            roots.first().cloned()
+                        } else {
+                            None
+                        },
+                        ..Origin::default()
+                    }
+                } else if kind(f) == "Attribute" {
                     let source = self.origin(child(f, "value"));
-                    if source
+                    let known = source
                         .kind
                         .as_deref()
-                        .is_some_and(|k| !mutators(k).is_empty())
-                    {
-                        Origin {
-                            members: source.borrowed.or(source.members),
-                            kind: source.kind,
+                        .is_some_and(|k| !mutators(k).is_empty());
+                    let root = source.borrowed.or(source.members);
+                    match s(f, "attr") {
+                        "copy" => Origin {
+                            members: root,
+                            kind: if known { source.kind } else { None },
                             ..Origin::default()
-                        }
-                    } else {
-                        Origin::default()
+                        },
+                        "items" | "values" => Origin {
+                            members: root,
+                            ..Origin::default()
+                        },
+                        "get" => Origin {
+                            borrowed: root,
+                            ..Origin::default()
+                        },
+                        _ => Origin::default(),
                     }
                 } else {
                     Origin::default()
@@ -218,6 +287,20 @@ impl Visitor<'_> {
                     self.bind(t, Origin::default());
                 }
             }
+            "Expr" => {
+                // A discarded result means the call was made for its effect on the receiver.
+                let call = child(n, "value");
+                let f = child(call, "func");
+                if kind(call) == "Call" && kind(f) == "Attribute" {
+                    let o = self.origin(child(f, "value"));
+                    if o.kind.is_none() && any_mutator(s(f, "attr")) {
+                        self.report(call, o);
+                    }
+                }
+                for c in children(n) {
+                    self.visit(c)
+                }
+            }
             "Call" => {
                 let f = child(n, "func");
                 if kind(f) == "Attribute" {
@@ -327,7 +410,7 @@ pub(super) fn check(file: &Source, out: &mut Vec<Finding>) {
             .filter(|a| !["self", "cls"].contains(&s(a, "arg")))
             .map(|a| {
                 let ns = names(file, child(a, "annotation"));
-                let k = if ns.len() == 1 {
+                let k = if ns.len() == 1 && !child(a, "annotation").is_null() {
                     ns.first().map(|n| match n.as_str() {
                         "typing.List"
                         | "typing.MutableSequence"
@@ -338,6 +421,13 @@ pub(super) fn check(file: &Source, out: &mut Vec<Finding>) {
                         "typing.Set" | "typing.MutableSet" | "collections.abc.MutableSet" => {
                             "builtins.set".into()
                         }
+                        "collections.Counter"
+                        | "collections.OrderedDict"
+                        | "collections.defaultdict"
+                        | "typing.Counter"
+                        | "typing.DefaultDict"
+                        | "typing.OrderedDict" => "builtins.dict".into(),
+                        "typing.Deque" => "collections.deque".into(),
                         _ => n.clone(),
                     })
                 } else {

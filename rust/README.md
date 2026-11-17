@@ -1,6 +1,6 @@
 # Native leesh
 
-Standalone Rust implementation of leesh's 23 registered rules and seven CLI
+Standalone Rust implementation of leesh's 24 registered rules and seven CLI
 commands. The Python distribution bundles this executable and invokes it from
 `leesh` and `python -m leesh`. The Python implementation remains the reference.
 

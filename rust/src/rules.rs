@@ -21,6 +21,17 @@ fn names(file: &Source, node: &Node) -> BTreeSet<String> {
 fn add(out: &mut Vec<Finding>, file: &Source, node: &Node, code: &str, msg: impl Into<String>) {
     out.push(finding(file, node, code, msg, None));
 }
+/// A name the file reads: a loaded name or attribute, or `getattr` spelling one.
+fn loaded(file: &Source, node: &Node) -> bool {
+    match kind(node) {
+        "Name" | "Attribute" => kind(child(node, "ctx")) == "Load",
+        "Call" => {
+            let function = names(file, child(node, "func"));
+            function.len() == 1 && function.contains("builtins.getattr")
+        }
+        _ => false,
+    }
+}
 fn parameters(node: &Node) -> Vec<&Node> {
     let args = child(node, "args");
     ["posonlyargs", "args", "kwonlyargs"]
@@ -37,7 +48,7 @@ pub fn check(file: &Source, workspace: &Workspace) -> Vec<Finding> {
     let inner = file.has_layer(&["core", "port"]);
     let deterministic = file.deterministic(workspace);
     for node in walk(&file.tree) {
-        if ["Name", "Attribute"].contains(&kind(node)) && kind(child(node, "ctx")) == "Load" {
+        if loaded(file, node) {
             let ns = names(file, node);
             if ns.is_empty() {
                 continue;
@@ -52,7 +63,9 @@ pub fn check(file: &Source, workspace: &Workspace) -> Vec<Finding> {
                         .as_ref()
                         .is_some_and(|m| workspace.policy.clock_modules.contains(m))))
                 && ns.iter().all(|n| {
-                    if inner || deterministic {
+                    if inner {
+                        effects::impure_in_core(n)
+                    } else if deterministic {
                         effects::nondeterministic(n)
                     } else {
                         effects::WALL_CLOCK.contains(&n.as_str())
@@ -81,6 +94,17 @@ pub fn check(file: &Source, workspace: &Workspace) -> Vec<Finding> {
                     node,
                     "LIT202",
                     format!("{text} performs I/O; pass its result into the core"),
+                    Some(text.clone()),
+                ));
+            }
+            if inner && ns.iter().all(|n| effects::dynamic(n)) {
+                out.push(finding(
+                    file,
+                    node,
+                    "LIT208",
+                    format!(
+                        "{text} runs code chosen at run time; import and call what the core needs by name"
+                    ),
                     Some(text.clone()),
                 ));
             }

@@ -54,7 +54,7 @@ For a project's development dependencies, use `uv add --dev leesh` and
 `uv run leesh check`. To pin the Git source instead:
 
 ```bash
-uv add --dev 'leesh @ git+https://github.com/denismaciel/leesh.git@v0.21.0'
+uv add --dev 'leesh @ git+https://github.com/denismaciel/leesh.git@v0.22.0'
 ```
 
 Or run it with pre-commit:
@@ -62,7 +62,7 @@ Or run it with pre-commit:
 ```yaml
 repos:
   - repo: https://github.com/denismaciel/leesh
-    rev: v0.21.0
+    rev: v0.22.0
     hooks:
       - id: leesh
 ```

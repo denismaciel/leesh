@@ -45,6 +45,25 @@ def test_lit201_rejects_nondeterminism_in_core(project: Project, source: str) ->
     assert "pass the observed" in finding.message
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import time\ntime.sleep(1)",
+        "import time\nnow = time.localtime()",
+        "from time import strftime\nyear = strftime('%Y')",
+        "import time\nread = getattr(time, 'time')",
+    ],
+)
+def test_lit201_keeps_the_time_module_out_of_core(project: Project, source: str) -> None:
+    assert project.lint(CORE, source) == ["LIT201"]
+    assert project.lint(SERVICE, source.replace("'time'", "'sleep'")) == []
+
+
+def test_lit201_allows_time_values_in_core(project: Project) -> None:
+    source = "import time\ndef year(value: time.struct_time):\n    return value.tm_year"
+    assert project.lint(CORE, source) == []
+
+
 def test_lit201_allows_deterministic_ids(project: Project) -> None:
     source = "import uuid\ndef calculate(namespace, key):\n    return uuid.uuid5(namespace, key)"
     assert project.lint(CORE, source) == []
@@ -105,6 +124,16 @@ def test_lit201_exempts_clock_modules_and_tests_but_not_core(project: Project) -
         'from pathlib import Path\nREADER = Path("x").read_text',
         "print('x')",
         "import shutil\nshutil.rmtree('x')",
+        "import os\nos.rmdir('x')",
+        "import os\npid = os.getpid()",
+        "import os\nfound = os.path.exists('x')",
+        "import os.path as p\nsize = p.getsize('x')",
+        "import sys\nargs = sys.argv",
+        "import sys\nsys.path.append('x')",
+        "import sys\nsys.modules['x'] = None",
+        "import json\nimport sys\ndata = json.load(sys.stdin)",
+        "import builtins\nreader = getattr(builtins, 'open')",
+        "import sys\ngetattr(sys, 'stdout').write('x')",
     ],
 )
 @pytest.mark.parametrize("path", [CORE, PORTS])
@@ -153,6 +182,19 @@ def test_lit202_does_not_invent_effects_for_shadowed_names(project: Project, sou
     assert "LIT202" not in project.lint(CORE, source)
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\nname = os.path.join('a', os.sep, os.path.basename('b'))",
+        "import os\ndef calculate(path: os.PathLike):\n    return os.fspath(path)",
+        "import sys\nlimit = sys.maxsize if sys.version_info >= (3, 12) else 0",
+        "def calculate(order, name):\n    return getattr(order, 'status'), getattr(order, name)",
+    ],
+)
+def test_lit202_allows_pure_os_and_sys(project: Project, source: str) -> None:
+    assert project.lint(CORE, source) == []
+
+
 def test_lit202_allows_io_in_the_shell(project: Project) -> None:
     assert project.lint(SERVICE, "print('x')\nopen('x')\n") == []
 
@@ -170,6 +212,9 @@ def test_lit202_allows_io_in_the_shell(project: Project) -> None:
         """,
         "from decimal import getcontext\ndef calculate():\n    return getcontext().prec",
         "import os\ndef calculate():\n    return os.getcwd()",
+        "import itertools\nIDS = itertools.count()\ndef calculate():\n    return next(IDS)",
+        "from collections import Counter\nSEEN = Counter()\ndef calculate():\n    return SEEN",
+        "from collections import deque\nQUEUE = deque()\ndef calculate():\n    return len(QUEUE)",
     ],
 )
 def test_lit203_rejects_ambient_state(project: Project, source: str) -> None:
@@ -211,6 +256,25 @@ def test_lit203_leaves_environment_to_lit301(project: Project) -> None:
         'def calculate(items: list[object]):\n    copied = list(items)\n    copied[0].status = "x"',
         'def calculate(items: list[object]):\n    for item in items:\n        item.status = "x"',
         'def calculate(items: list[object]):\n    copied = items[:]\n    copied[0].status = "x"',
+        "def calculate(items):\n    items.append(1)",
+        "def calculate(order):\n    order.lines.append(1)",
+        "def calculate(index: dict):\n    for row in index.values():\n        row['x'] = 1",
+        "def calculate(index):\n    for key, row in index.items():\n        row.update(a=1)",
+        "def calculate(rows):\n    for i, row in enumerate(rows):\n        row['x'] = i",
+        "def calculate(rows):\n    for row in sorted(rows):\n        row.x = 1",
+        "def calculate(a, b):\n    for x, y in zip(a, a):\n        x.done = True",
+        "def calculate(index):\n    index.get('a').append(1)",
+        "def calculate(index):\n    found = index.get('a')\n    found['x'] = 1",
+        "import copy\ndef calculate(order):\n    own = copy.copy(order)\n    own.lines[0].x = 1",
+        """\
+        from dataclasses import replace
+        def calculate(order):
+            own = replace(order, status="x")
+            own.lines.append(1)
+        """,
+        "def calculate(order):\n    own = order.copy()\n    own['lines'].append(1)",
+        "from collections import deque\ndef calculate(queue: deque):\n    return queue.popleft()",
+        "from collections import Counter\ndef calculate(index: Counter):\n    index.clear()",
     ],
 )
 def test_lit204_rejects_borrowed_mutation(project: Project, source: str) -> None:
@@ -230,7 +294,12 @@ def test_lit204_rejects_borrowed_mutation(project: Project, source: str) -> None
         "def calculate(items: list[int]):\n    copied = list(items)\n    copied.sort()",
         "def calculate(items: list[int]):\n    alias = items\n    alias = []\n    alias.append(1)",
         "def calculate(number: int):\n    number += 1\n    return number",
-        "def calculate(items: list[int]):\n    def nested(items):\n        items.clear()",
+        "def calculate(items: list):\n    def nested():\n        own = []\n        own.clear()",
+        "def calculate(order):\n    copied = order.copy()\n    copied.status = 'x'",
+        "import copy\ndef calculate(order):\n    own = copy.deepcopy(order)\n    own.a.x = 1",
+        "def calculate(order):\n    return order.total.add(1)",
+        "def calculate(order: Order):\n    order.append(1)",
+        "def calculate(index):\n    found = index.get('a')\n    return found.append",
         "def calculate(items: list[int]):\n    return [items.clear() for items in [[], []]]",
     ],
 )
@@ -254,6 +323,106 @@ def test_lit204_allows_local_mutation(project: Project, source: str) -> None:
 @pytest.mark.parametrize("path", [MODEL, PORTS])
 def test_lit205_rejects_mutable_records(project: Project, path: str, source: str) -> None:
     assert project.lint(path, source) == ["LIT205"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        'extra: "dict[str, int] | None"',
+        'extra: "tuple[list[int], ...]"',
+        "extra: defaultdict",
+        "extra: deque[int]",
+        "extra: bytearray",
+        "extra: object = field(default_factory=list)",
+        "extra: object = field(default_factory=lambda: {})",
+    ],
+)
+def test_lit205_rejects_hidden_mutable_fields(project: Project, field: str) -> None:
+    source = f"""\
+        from collections import defaultdict, deque
+        from dataclasses import dataclass, field
+        @dataclass(frozen=True)
+        class Order:
+            {field}
+        """
+    assert project.lint(MODEL, source) == ["LIT205"]
+
+
+def test_lit205_checks_named_tuple_fields(project: Project) -> None:
+    source = "from typing import NamedTuple\nclass Row(NamedTuple):\n    cells: list[str]"
+    assert project.lint(MODEL, source) == ["LIT205"]
+    assert project.lint(MODEL, source.replace("list[str]", "tuple[str, ...]")) == []
+
+
+def test_lit205_rejects_writes_to_frozen_records(project: Project) -> None:
+    source = """\
+        from dataclasses import dataclass, field
+        @dataclass(frozen=True)
+        class Order:
+            id: str
+            key: str = field(init=False)
+            def __post_init__(self) -> None:
+                object.__setattr__(self, "key", self.id.lower())
+            def rename(self, id: str) -> None:
+                object.__setattr__(self, "id", id)
+        """
+    [finding] = project.write({MODEL: source}).findings(MODEL)
+    assert (finding.code, finding.line) == ("LIT205", 9)
+
+
+def test_lit205_reads_types_not_literal_values(project: Project) -> None:
+    source = """\
+        from dataclasses import dataclass, field
+        from typing import Annotated, Literal
+        @dataclass(frozen=True)
+        class Order:
+            kind: Literal["list", "dict"]
+            note: Annotated[str, "a list of words"]
+            tags: tuple[str, ...] = field(default_factory=tuple)
+        """
+    assert project.lint(MODEL, source) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "result = eval('1 + 1')",
+        "exec('x = 1')",
+        "code = compile('1', 'x', 'eval')",
+        "module = __import__('json')",
+        "import importlib\nmodule = importlib.import_module('json')",
+        "from importlib import import_module as load\nmodule = load('json')",
+        "def calculate():\n    return globals()",
+        "def calculate():\n    return locals()",
+        "def calculate():\n    breakpoint()",
+        "import pickle\ndef calculate(blob):\n    return pickle.loads(blob)",
+        "import builtins\nrun = getattr(builtins, 'eval')",
+    ],
+)
+@pytest.mark.parametrize("path", [CORE, PORTS])
+def test_lit208_rejects_dynamic_code(project: Project, path: str, source: str) -> None:
+    assert "LIT208" in project.lint(path, source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def calculate(eval):\n    return eval(1)",
+        "import re\nPATTERN = re.compile('x')",
+        "def compile(value):\n    return value\nresult = compile(1)",
+        "import json\ndef calculate(text):\n    return json.loads(text)",
+    ],
+)
+def test_lit208_does_not_guess(project: Project, source: str) -> None:
+    assert project.lint(CORE, source) == []
+
+
+def test_lit208_allows_dynamic_code_outside_core(project: Project) -> None:
+    assert project.lint(SERVICE, "import importlib\nmodule = importlib.import_module('x')") == []
+
+
+def test_laundered_environment_reads_are_seen(project: Project) -> None:
+    assert project.lint(CORE, "import os\nvalue = getattr(os, 'environ')['X']\n") == ["LIT301"]
 
 
 def test_lit205_allows_frozen_records(project: Project) -> None:
