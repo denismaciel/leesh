@@ -4,43 +4,85 @@
 
 ### Rules
 
+- **LIT105 `import-cycle` (new).** Reports strongly connected import cycles across
+  workspace modules.
+- **LIT106 `deferred-import` (new).** Disallows function-local imports (outside
+  `boundary`, `test`, `marker`) and `if TYPE_CHECKING:` blocks in `core`/`port`.
 - **LIT208 `dynamic-code` (new).** Core and port code may not call `eval`,
   `exec`, `compile`, `__import__`, `importlib.import_module`, `globals`,
-  `locals`, `breakpoint`, or use `pickle`, `marshal`, `shelve` and `runpy`.
-- **`getattr` with a literal name is read as the attribute.**
-  `getattr(os, "environ")` and `getattr(time, "time")` are reported like
-  `os.environ` and `time.time` by every rule that resolves names.
-- **LIT202 treats `os` and `sys` as effectful by default.** Everything under
-  them is I/O in core and port code except pure path arithmetic
-  (`os.path.join`, `os.sep`, `os.fspath`, ...) and interpreter constants
-  (`sys.maxsize`, `sys.version_info`, ...). `os.rmdir`, `os.getpid`,
-  `os.path.exists`, `sys.argv`, `sys.path`, `sys.modules` and a bare
-  `sys.stdin` are now reported.
-- **LIT201 bans the `time` module in core and port code**, including
-  `time.sleep`, `time.localtime` and `time.strftime`. `time.struct_time` stays
-  legal. Deterministic custom layers are unchanged.
-- **LIT203 counts more module state:** `defaultdict()`, `deque()`,
-  `Counter()`, `OrderedDict()`, `ChainMap()`, `bytearray()`, `iter()`,
-  `itertools.count()` and `itertools.cycle()` bound at module level.
-- **LIT204 follows elements and shallow copies.** Values stay borrowed through
-  `enumerate`, `zip`, `sorted`, `reversed`, `filter`, `.values()`, `.items()`,
-  `.get()`, `copy.copy`, `dataclasses.replace` and `.copy()`. Deques and
-  `defaultdict`/`OrderedDict`/`Counter` parameters have known mutators. On a
-  value of unknown type, a mutator such as `append` or `update` is reported
-  when its result is discarded, so `order.lines.append(x)` and an untyped
-  `items.append(x)` no longer pass.
-- **LIT205 sees hidden mutable fields:** compound string annotations
-  (`"dict[str, int] | None"`), `deque`, `defaultdict`, `OrderedDict`,
-  `Counter`, `ChainMap`, `bytearray`, `NamedTuple` fields, and
-  `field(default_factory=list)`. `object.__setattr__(self, ...)` is reported
-  outside `__post_init__`. `Literal["list"]` values and `Annotated` metadata
-  are no longer mistaken for types.
-- **LIT305 checks lambda defaults.**
+  `locals`, `breakpoint`, dynamic `getattr`, `__dict__`, or use `pickle`,
+  `marshal`, `shelve` and `runpy`.
+- **LIT209 `untyped-core` (new).** Core and port functions/records must annotate
+  parameters and return types without `Any`, `TypedDict`, or unparameterized
+  collections.
+- **LIT307 `broad-except` (new).** Disallows bare `except:` and broad
+  `except Exception:` / `except BaseException:` catches that do not re-raise
+  (outside `boundary`, `router`, `test`, `marker`).
+- **LIT308 `defensive-duck-typing` (new).** Disallows `hasattr`, 3-argument
+  `getattr` with defaults (in `core`/`shell`), and `typing.cast` (in `core`).
+- **LIT309 `test-hygiene` (new).** Disallows `time.sleep` in tests; when
+  `workspace.strict = true`, also disallows importing `adapter` modules in unit
+  tests (`test` layer, while `integration_test` may import adapters).
+- **LIT404 `core-classes` (new).** Disallows plain classes in `core`; when
+  `workspace.strict = true`, also flags non-dunder/non-property methods on
+  `core` dataclasses and `NamedTuple`s.
+- **LIT405 `core-exceptions` (new, opt-in via `workspace.strict = true`).**
+  Flags `raise` statements in `core` outside class `__post_init__` (exempting
+  `AssertionError`, `NotImplementedError`, and `outcome_suffixes` handled by
+  `LIT402`).
+- **LIT406 `explicit-arguments` (new, opt-in via `workspace.strict = true`).**
+  Disallows parameter and dataclass field defaults on public `core`/`port`
+  APIs.
+- **Tighter defaults & purity rules:**
+  - `core` may now import only `core` (not `port`).
+  - `LIT203` bans `@cache`/`@lru_cache` outside `core`, scopes `nonlocal` to
+    `core`/`port`, and tracks more module-level mutable state (`defaultdict`,
+    `deque`, `Counter`, `OrderedDict`, `ChainMap`, `bytearray`, `iter`,
+    `itertools.count`/`cycle`).
+  - `LIT201` bans `time.*` in `core`/`port` (except `time.struct_time`).
+  - `LIT202` treats `os` and `sys` as effectful by default (except pure path
+    arithmetic and interpreter constants).
+  - `LIT204` tracks element views, shallow copies, and untyped mutator calls.
+  - `LIT205` inspects compound string annotations, `NamedTuple`s,
+    `default_factory`, and `object.__setattr__` outside `__post_init__`.
+  - `LIT303` checks both `router` and `shell` for I/O and adapter construction.
+  - `LIT304` catches patching packages (`responses`, `respx`, `freezegun`,
+    `time_machine`, `httpretty`, `mock`), `monkeypatch`, `pytest-mock`, and
+    module attribute patching.
+  - `LIT305` checks lambda defaults.
+  - `getattr` with a literal attribute name is resolved like attribute access.
+
+### Layouts & Configuration
+
+- **Built-in `integration_test` layer** (`base = "test"`): automatically
+  classifies `conftest.py` and integration/e2e/persistence/contract/smoke/
+  fixture/helper/fake test paths so unit-test strictness (`LIT309`) does not
+  flag integration test setup.
+- **`[workspace] strict = false`** (opt-in) enables strict checks (`LIT309`
+  unit-test adapter imports, `LIT404` record methods, `LIT405`, `LIT406`).
+- Optional `review_by = "YYYY-MM-DD"` expiry dates on `[[overrides]]`,
+  `[[dependency_overrides]]`, `[[allowed_dependencies]]`, and `[[ignore]]`, plus
+  `max_count` on `[[ignore]]`.
+
+### Architecture & Performance
+
+- **Rust-only engine.** Removed the legacy Python reference engine; the PyPI
+  package now ships only the thin Python launcher shim (`src/leesh/_native.py`)
+  and the native `leesh-rust` executable.
+- **4.6×–51× faster and 4×–8.6× less memory.** Streaming per-file AST and symbol
+  lifecycles drop syntax trees and symbol tables immediately after local checks,
+  paired with an undo-log symbol resolver, lock-free per-marker import closures,
+  O(1) package/override lookups, and streaming JSON output:
+  - Django (2,818 files): `0.65 s → 0.14 s` multi-core (`3.15 s → 0.69 s` single-core);
+    peak RSS `362 MB → 95 MB` multi-core (`322 MB → 44 MB` single-core).
+  - Apache Airflow (5,371 files, 102 packages): `12.25 s → 0.24 s` multi-core
+    (`29.85 s → 1.19 s` single-core); peak RSS `490 MB → 97 MB` multi-core
+    (`456 MB → 53 MB` single-core).
 
 ### Upgrading
 
-- Every change above can add findings. Run `leesh report`, then fix them or
-  run `leesh baseline` to record them.
+- Every new or tightened rule can add findings. Run `leesh report`, then fix
+  them or run `leesh baseline` to record them.
 
 ## 0.21.0
 

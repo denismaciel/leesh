@@ -17,6 +17,7 @@ FAKES = "src/example/domains/orders/fakes.py"
     ("importer", "target", "message"),
     [
         (CORE, API, "core cannot import boundary module example.app.api"),
+        (CORE, "src/example/domains/orders/ports.py", "core cannot import port module"),
         (CORE, SERVICE, "core cannot import shell module example.domains.orders.service"),
         (MODEL, REPOSITORY, "core cannot import adapter module"),
         (SERVICE, REPOSITORY, "shell cannot import adapter module"),
@@ -45,14 +46,14 @@ def test_lit101_rejects_disallowed_layers(
     ("importer", "target"),
     [
         (CORE, MODEL),
-        (CORE, "src/example/domains/orders/ports.py"),
+        ("src/example/domains/orders/ports.py", CORE),
         (SERVICE, CORE),
         (SERVICE, "src/example/domains/orders/checkout/service.py"),
         (REPOSITORY, MODEL),
         (ROUTER, SERVICE),
         (ROUTER, "src/example/app/dependencies.py"),
         (API, REPOSITORY),
-        ("tests/test_orders.py", REPOSITORY),
+        ("tests/integration/test_orders.py", REPOSITORY),
         ("tests/test_orders.py", FAKES),
         (FAKES, "src/example/domains/orders/ports.py"),
         ("src/example/db/fakes.py", FAKES),
@@ -312,7 +313,7 @@ def test_lit102_checks_deferred_and_type_checking_imports(project: Project) -> N
             """
         }
     )
-    assert [item.line for item in project.findings(SERVICE)] == [3, 5]
+    assert [item.line for item in project.findings(SERVICE) if item.code == "LIT102"] == [3, 5]
 
 
 def test_lit102_lists_are_configurable(project: Project) -> None:

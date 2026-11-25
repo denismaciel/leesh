@@ -92,7 +92,3 @@ jobs:
         with:
           name: ci-native
           path: rust/target/x86_64-unknown-linux-musl/release/leesh-rust
-      - run: uv sync --locked
-      - run: uv run python -m pytest -p benchmarks.differential_plugin
-      - name: Compare pinned Python projects
-        run: uv run python benchmarks/compare.py --project requests --project flask --runs 1 --jobs 1

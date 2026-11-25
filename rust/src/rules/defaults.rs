@@ -1,4 +1,5 @@
 use super::*;
+
 pub(super) fn unparse(n: &Node) -> String {
     fn sequence(n: &Node, field: &str) -> String {
         items(n, field)
@@ -110,10 +111,17 @@ fn constant(s: &str) -> bool {
         && s.bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
 }
-fn immutable(n: &Node, constants: &HashMap<String, &Node>) -> bool {
+
+fn immutable<'a>(
+    n: &Node,
+    constants: &HashMap<&'a str, &'a Node>,
+    visiting: &mut Vec<&'a str>,
+) -> bool {
     match kind(n) {
         "Constant" => true,
-        "Tuple" => items(n, "elts").iter().all(|n| immutable(n, constants)),
+        "Tuple" => items(n, "elts")
+            .iter()
+            .all(|n| immutable(n, constants, visiting)),
         "UnaryOp" => {
             ["UAdd", "USub"].contains(&kind(child(n, "op")))
                 && kind(child(n, "operand")) == "Constant"
@@ -125,10 +133,13 @@ fn immutable(n: &Node, constants: &HashMap<String, &Node>) -> bool {
             let name = s(n, "id");
             if !constant(name) {
                 false
-            } else if let Some(bound) = constants.get(name) {
-                let mut rest = constants.clone();
-                rest.remove(name);
-                immutable(bound, &rest)
+            } else if visiting.contains(&name) {
+                true
+            } else if let Some((&key, &bound)) = constants.get_key_value(name) {
+                visiting.push(key);
+                let ok = immutable(bound, constants, visiting);
+                visiting.pop();
+                ok
             } else {
                 true
             }
@@ -152,21 +163,24 @@ fn immutable(n: &Node, constants: &HashMap<String, &Node>) -> bool {
                 .chain(items(n, "keywords").iter().map(|n| child(n, "value")))
                 .all(|n| {
                     if ["List", "Set"].contains(&kind(n)) {
-                        items(n, "elts").iter().all(|n| immutable(n, constants))
+                        items(n, "elts")
+                            .iter()
+                            .all(|n| immutable(n, constants, visiting))
                     } else {
-                        immutable(n, constants)
+                        immutable(n, constants, visiting)
                     }
                 })
         }
         _ => false,
     }
 }
-pub(super) fn check(file: &Source, out: &mut Vec<Finding>) {
+
+pub(super) fn check(file: &FileContext<'_>, out: &mut Vec<Finding>) {
     if file.layer().is_empty() || file.has_layer(&["boundary", "router", "transaction", "test"]) {
         return;
     }
-    let mut constants = HashMap::new();
-    for st in items(&file.tree, "body") {
+    let mut constants: HashMap<&str, &Node> = HashMap::new();
+    for st in items(file.tree, "body") {
         let target = if kind(st) == "Assign" && items(st, "targets").len() == 1 {
             &items(st, "targets")[0]
         } else if kind(st) == "AnnAssign" && !child(st, "value").is_null() {
@@ -175,36 +189,50 @@ pub(super) fn check(file: &Source, out: &mut Vec<Finding>) {
             continue;
         };
         if kind(target) == "Name" {
-            constants.insert(s(target, "id").into(), child(st, "value"));
+            constants.insert(s(target, "id"), child(st, "value"));
         }
     }
-    visit(file, &file.tree, &constants, false, false, out);
+    let mut visiting = Vec::new();
+    visit(
+        file,
+        file.tree,
+        &constants,
+        &mut visiting,
+        false,
+        false,
+        out,
+    );
 }
-fn visit(
-    file: &Source,
-    n: &Node,
-    constants: &HashMap<String, &Node>,
+
+fn visit<'a>(
+    file: &FileContext<'a>,
+    n: &'a Node,
+    constants: &HashMap<&'a str, &'a Node>,
+    visiting: &mut Vec<&'a str>,
     protocol: bool,
     exception: bool,
     out: &mut Vec<Finding>,
 ) {
     let mut p = protocol;
     let mut e = exception;
-    if kind(n) == "ClassDef" {
-        p |= items(n, "bases")
-            .iter()
-            .map(unparse)
-            .any(|b| b == "Protocol" || b.ends_with(".Protocol"));
-        e |= s(n, "name").ends_with("Error")
-            || s(n, "name").ends_with("Exception")
-            || items(n, "bases").iter().map(unparse).any(|b| {
-                ["Exception", "BaseException"].contains(&b.as_str())
-                    || b.ends_with(".Exception")
-                    || b.ends_with(".BaseException")
-            });
+    let k = kind(n);
+    if k == "ClassDef" {
+        for base in items(n, "bases") {
+            let b = unparse(base);
+            if b == "Protocol" || b.ends_with(".Protocol") {
+                p = true;
+            }
+            if ["Exception", "BaseException"].contains(&b.as_str())
+                || b.ends_with(".Exception")
+                || b.ends_with(".BaseException")
+            {
+                e = true;
+            }
+        }
+        e |= s(n, "name").ends_with("Error") || s(n, "name").ends_with("Exception");
     }
-    if kind(n) == "Lambda"
-        || ["FunctionDef", "AsyncFunctionDef"].contains(&kind(n))
+    if k == "Lambda"
+        || ["FunctionDef", "AsyncFunctionDef"].contains(&k)
             && !p
             && !(e && s(n, "name") == "__init__")
     {
@@ -213,7 +241,7 @@ fn visit(
             .iter()
             .chain(items(a, "kw_defaults"))
             .filter(|n| !n.is_null())
-            .any(|n| !immutable(n, constants))
+            .any(|n| !immutable(n, constants, visiting))
         {
             add(
                 out,
@@ -224,7 +252,5 @@ fn visit(
             );
         }
     }
-    for c in children(n) {
-        visit(file, c, constants, p, e, out);
-    }
+    for_each_child(n, |c| visit(file, c, constants, visiting, p, e, out));
 }

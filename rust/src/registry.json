@@ -17,7 +17,7 @@
   {
     "code": "LIT101",
     "name": "layer-dependency",
-    "documentation": "A module imports a layer its own layer may not depend on.\n\nThe allowed targets per layer come from `[layer_dependencies]`; by default\ncore and port import only core and port, shell adds shell, adapter adds\nadapter, and routers import shell, boundary, router and transaction modules.\nOther layers are unrestricted, except that only test code may import test\ncode, so a composition root cannot wire a fake into production. A custom\nlayer uses its base layer's entry unless it has its own, and counts as its\nbase layer when imported. Imports are followed through package `__init__`\nmodules and re-exports, so a package initializer cannot launder a forbidden\ndependency. Each forbidden module is reported once per importer. Declare\nmodules a layer may always use with `[[allowed_dependencies]]`, or record\none deliberate edge with `[[dependency_overrides]]`."
+    "documentation": "A module imports a layer its own layer may not depend on.\n\nThe allowed targets per layer come from `[layer_dependencies]`; by default\ncore imports only core, port imports core and port, shell adds shell,\nadapter adds adapter, and routers import shell, boundary, router and\ntransaction modules.\nOther layers are unrestricted, except that only test code may import test\ncode, so a composition root cannot wire a fake into production. A custom\nlayer uses its base layer's entry unless it has its own, and counts as its\nbase layer when imported. Imports are followed through package `__init__`\nmodules and re-exports, so a package initializer cannot launder a forbidden\ndependency. Each forbidden module is reported once per importer. Declare\nmodules a layer may always use with `[[allowed_dependencies]]`, or record\none deliberate edge with `[[dependency_overrides]]`."
   },
   {
     "code": "LIT102",
@@ -35,6 +35,16 @@
     "documentation": "A domain imports another domain it does not declare, or that domain's internals.\n\nA module under `<package>/domains/<name>/` belongs to domain `<name>`. It may\nimport another domain only when `[domains]` lists that domain among its\ndependencies, and then only its core and shell modules (`core.py`,\n`model.py`, `service.py`, ...); ports, adapters such as `persistence/`, and\nboundaries stay private to their domain. Undeclared imports always fail,\nso a workspace without `[domains]` keeps its domains independent. The\ngraph is checked when the manifest loads: every domain a dependency names\nneeds its own entry, and a cycle is a manifest error. `shared/`,\n`projections/` and everything outside `domains/` are not domains. Imports\nare followed through package `__init__` modules and re-exports, as for\nLIT101, and `[[dependency_overrides]]` exempts one deliberate edge."
   },
   {
+    "code": "LIT105",
+    "name": "import-cycle",
+    "documentation": "A workspace module participates in a circular import chain.\n\nModules form a directed acyclic graph. Circular imports couple modules\ntogether and push code toward `TYPE_CHECKING` and local-import hacks.\nExtract shared values into a lower module so imports flow one way.\n`[[dependency_overrides]]` exempts one deliberate edge."
+  },
+  {
+    "code": "LIT106",
+    "name": "deferred-import",
+    "documentation": "Code hides an import inside a function or a `TYPE_CHECKING` block.\n\nOutside boundary and test modules, imports belong at module top level;\nfunction-body imports obscure dependencies and paper over import cycles.\nIn core and port modules, `if TYPE_CHECKING:` blocks are also reported:\nrestructure shared types instead of hiding circular or cross-layer edges."
+  },
+  {
     "code": "LIT201",
     "name": "nondeterminism",
     "documentation": "Code reads the clock, randomness, or fresh IDs directly.\n\nCore and port modules may not read any nondeterministic source\n(`datetime.now`, `uuid4`, `random`, `secrets`, `os.urandom`) or use the\n`time` module at all, `time.sleep` and `time.localtime` included; pass the\nobserved value in. Elsewhere only wall-clock reads are reported, so time\nflows through one clock you can control in tests. List that clock's modules\nin `workspace.clock_modules`; test modules are exempt. A custom layer with\n`deterministic = true`, such as Temporal workflow code, is held to the core\nstandard."
@@ -47,7 +57,7 @@
   {
     "code": "LIT203",
     "name": "ambient-state",
-    "documentation": "Core or port code reads or writes state it was not given.\n\nReports process-wide context (working directory, locale, decimal context,\ncontext variables), writes through `global`/`nonlocal`, and reads of\nmutable module-level collections and iterators (`[]`, `defaultdict()`,\n`deque()`, `itertools.count()`). Pass the value in and return the new\nstate instead. Environment variables are covered by LIT301."
+    "documentation": "Code reads or writes state it was not given.\n\nIn core and port modules, reports process-wide context (working directory,\nlocale, decimal context, context variables) and `nonlocal` writes. Across\ncore, port, shell, adapter and router modules, reports `global` writes and\nreads of mutable module-level collections, iterators, locks, queues, and\nclient singletons (`[]`, `defaultdict()`, `deque()`, `threading.Lock()`,\n`httpx.Client()`, ...). Outside core (port, shell, adapter, router), also\nreports stateful cache decorators (`@functools.cache`,\n`@functools.lru_cache`); pure core functions may still memoize. Pass values\nin and return the new state instead. Environment variables are covered by\nLIT301."
   },
   {
     "code": "LIT204",
@@ -57,7 +67,7 @@
   {
     "code": "LIT205",
     "name": "frozen-values",
-    "documentation": "A core or port record is mutable.\n\nDataclasses must be declared with `frozen=True`. Their fields, and those\nof a `NamedTuple`, may not be annotated with mutable collections (`list`,\n`dict`, `set`, `bytearray`, `deque`, `defaultdict`, `OrderedDict`,\n`Counter`, `ChainMap`, or the `typing` and `collections.abc` mutable\nprotocols), in string annotations too, or built by a `default_factory`\nthat returns one. `object.__setattr__(self, ...)` writes to a frozen record\nand is reported outside `__post_init__`, where it sets derived fields.\n`ClassVar` fields are exempt. Use tuples, frozensets, or read-only\n`Mapping`/`Sequence` interfaces."
+    "documentation": "A core or port record is mutable.\n\nDataclasses must be declared with `frozen=True`. Their fields, and those\nof a `NamedTuple`, may not be annotated with mutable collections (`list`,\n`dict`, `set`, `bytearray`, `deque`, `defaultdict`, `OrderedDict`,\n`Counter`, `ChainMap`, or the `typing` and `collections.abc` mutable\nprotocols), in string annotations too, or built by a `default_factory`\nthat returns one. `object.__setattr__` and `object.__delattr__` write to\nfrozen records and are reported everywhere except\n`object.__setattr__(self, ...)` inside `__post_init__`, where it sets\nderived fields. `ClassVar` fields are exempt. Use tuples, frozensets, or\nread-only `Mapping`/`Sequence` interfaces."
   },
   {
     "code": "LIT206",
@@ -72,7 +82,12 @@
   {
     "code": "LIT208",
     "name": "dynamic-code",
-    "documentation": "Core or port code runs code or loads modules chosen at run time.\n\n`eval`, `exec`, `compile`, `__import__`, `importlib.import_module`,\n`globals`, `locals`, `breakpoint`, and `pickle`, `marshal`, `shelve` and\n`runpy` execute or reach code no other rule can see, so one call undoes\nevery purity rule. Import the module and call the function by name; parse\nserialized data at a boundary. `getattr` with a literal name is read as the\nattribute it spells, so `getattr(os, \"environ\")` is reported like\n`os.environ`."
+    "documentation": "Core or port code runs code or loads modules chosen at run time.\n\n`eval`, `exec`, `compile`, `__import__`, `importlib.import_module`,\n`globals`, `locals`, `breakpoint`, `setattr`, `delattr`, `vars`, `__dict__`,\ndynamic `getattr` (with a non-literal attribute name), and `pickle`,\n`marshal`, `shelve` and `runpy` execute or reach code no other rule can see,\nso one call undoes every purity rule. Import the module and call the\nfunction by name; parse serialized data at a boundary. `getattr` with a\nliteral name is read as the attribute it spells, so `getattr(os, \"environ\")`\nis reported like `os.environ`."
+  },
+  {
+    "code": "LIT209",
+    "name": "untyped-core",
+    "documentation": "Core or port code omits type annotations or uses untyped escape hatches.\n\nEvery parameter (except `self` and `cls`) and return type in core and port\nmodules must be annotated, because unannotated signatures hide capabilities\n(LIT207) and boolean flags (LIT401). `Any`, unparameterized containers\n(`dict`, `list`, `set`, `tuple`, `frozenset`, `Mapping`, `Sequence`), and\n`TypedDict` classes are also reported: parse external data into typed\nfrozen dataclasses at a boundary."
   },
   {
     "code": "LIT301",
@@ -87,12 +102,12 @@
   {
     "code": "LIT303",
     "name": "router-construction",
-    "documentation": "A router constructs its own infrastructure.\n\nRouters receive repositories, clients, engines and settings through\ndependency injection; they never build them. Calls to anything named\n`*Repository`, `*Client` or `*Engine`, `create_engine`,\n`create_async_engine` or `load_settings` are reported, matched by resolved\nname when the import is known."
+    "documentation": "A router or shell constructs its own infrastructure.\n\nRouters and shells receive repositories, clients, engines, adapters and\nsettings through dependency injection; they never build them. Calls to\nanything named `*Repository`, `*Client` or `*Engine`, `create_engine`,\n`create_async_engine`, `load_settings`, I/O client packages (`httpx`,\n`requests`, `redis`, ...), or workspace adapter callables are reported,\nmatched by resolved name when the import is known."
   },
   {
     "code": "LIT304",
     "name": "mocking",
-    "documentation": "A test patches code instead of passing fakes in.\n\nReports `unittest.mock`, pytest-mock fixtures (`mocker` and friends) and\n`monkeypatch` methods in test modules. If a test needs to replace a\ncollaborator, the code under test should accept it as a port; pass a\nhand-written fake that implements it."
+    "documentation": "A test patches code instead of passing fakes in.\n\nReports `unittest.mock`, pytest-mock fixtures (`mocker` and friends),\n`monkeypatch` / `pytest.MonkeyPatch`, patching libraries (`freezegun`,\n`time_machine`, `respx`, `responses`, `httpretty`, `mock`), and direct\nmodule-attribute patching (`mod.attr = fake`, `setattr(mod, ...)`) in test\nmodules. If a test needs to replace a collaborator, the code under test\nshould accept it as a port; pass a hand-written fake that implements it."
   },
   {
     "code": "LIT305",
@@ -105,9 +120,24 @@
     "documentation": "A module calls a function its layer may not call.\n\nNothing is forbidden by default. List qualified names per layer in\n`[forbidden_calls]`, with a trailing `.*` for a whole module: for example\n`time.sleep` and `asyncio.sleep` in Temporal workflow code, which must use\nthe workflow's own timer. Calls are matched by resolved name, so aliases\nand `from` imports count. A custom layer inherits its base layer's list\nunless it has its own."
   },
   {
+    "code": "LIT307",
+    "name": "broad-except",
+    "documentation": "Code outside the edges swallows broad exceptions.\n\nBare `except:`, `except BaseException:`, and `except Exception:` hide bugs\nand turn failures into silent wrong behavior. Outside boundary, router and\ntest modules, catch specific exception types or handle broad failures at\nthe edge. Handlers whose final statement is a `raise` (cleanup and re-raise\nor error translation) are allowed."
+  },
+  {
+    "code": "LIT308",
+    "name": "defensive-duck-typing",
+    "documentation": "Core or shell code uses duck-typing or type-cast workarounds.\n\n`hasattr` and three-argument `getattr(obj, name, default)` in core and\nshell, plus `typing.cast` in core, mask mismatched shapes instead of fixing\nthe data model. Parse values into typed dataclasses at the boundary and\nnarrow them explicitly."
+  },
+  {
+    "code": "LIT309",
+    "name": "test-hygiene",
+    "documentation": "Tests sleep on real time, or (in strict mode) unit tests import adapters.\n\n`time.sleep` makes tests slow and flaky; inject a clock or synchronize\nexplicitly. With `workspace.strict = true`, unit tests (layer `test`) may\nnot import concrete adapter modules; integration, contract, e2e, and\nadapter tests belong in the `integration_test` layer (configurable via\n`[layouts.<name>]`)."
+  },
+  {
     "code": "LIT401",
     "name": "boolean-policy",
-    "documentation": "A public core function takes a boolean, or returns one without a predicate name.\n\nA `bool` parameter is a hidden mode switch; replace it with an enum or a\nnamed value type. A function returning `bool` must be named as a question,\nwith one of the prefixes in `conventions.predicate_prefixes` (default `is_`,\n`has_`, `can_`, `should_`, `allows_`, `contains_`, `matches_`). Private\nfunctions are exempt."
+    "documentation": "A public core function takes a boolean, or returns one without a predicate name.\n\nA `bool` parameter is a hidden mode switch; replace it with an enum or a\nnamed value type. A function returning `bool` must be named as a question,\nwith one of the prefixes in `conventions.predicate_prefixes` (default `is_`,\n`has_`, `can_`, `should_`, `allows_`, `contains_`, `matches_`). String\nannotations, `Annotated`, unions, and local aliases are resolved. Private\nfunctions are exempt."
   },
   {
     "code": "LIT402",
@@ -118,5 +148,20 @@
     "code": "LIT403",
     "name": "restricted-subclassing",
     "documentation": "A class extends a base that is not on the allowlist.\n\nInheritance couples a class to its parent's internals; prefer composition,\nfunctions over values, and `Protocol`s for shared interfaces. A class may\nextend a name in `conventions.allowed_bases` (default: every builtin, such\nas `Exception`, plus `typing.Protocol`/`NamedTuple`/`TypedDict`/`Generic`,\n`enum` bases, Pydantic `BaseModel`/`RootModel`/`BaseSettings`, and\nSQLAlchemy declarative bases and `TypeDecorator`), or a workspace class that\ndirectly extends one: a shared `Base(DeclarativeBase)` for tables, a common\n`Model(BaseModel)`, a `DomainError(Exception)`, or a `Protocol` a fake\nimplements. Deeper hierarchies are reported, except for exceptions, which\nmay nest to any depth. A table that extends a declarative base may also mix\nin plain workspace classes, such as a `ProjectOwned` holding shared columns.\nEntries ending in `.*` allow a whole module. Set `conventions.allowed_bases`\nto replace the list, or `conventions.extend_allowed_bases` to add to it."
+  },
+  {
+    "code": "LIT404",
+    "name": "core-classes",
+    "documentation": "Core code defines plain behavior classes, or (in strict mode) methods on records.\n\nCore modules should model data as frozen dataclasses, `NamedTuple`s, or\nenums and express behavior as pure module-level functions. Plain classes\nwithout a data/protocol/exception role are always reported. With\n`workspace.strict = true`, public instance methods on core records\n(outside `@property`, `@cached_property`, `@classmethod`, and\n`@staticmethod`) are also reported."
+  },
+  {
+    "code": "LIT405",
+    "name": "core-exceptions",
+    "documentation": "Core code raises exceptions outside `__post_init__` (opt-in via `workspace.strict`).\n\nEnabled with `workspace.strict = true`. Core functions compute total\ndecisions over typed values and return named results. Raise exceptions only\nfor construction invariants inside `__post_init__` (or `AssertionError` /\n`NotImplementedError` guards); handle operational failures at edges.\nExpected-outcome exceptions remain reported under LIT402."
+  },
+  {
+    "code": "LIT406",
+    "name": "explicit-arguments",
+    "documentation": "Public core/port signatures or records define defaults (opt-in via `workspace.strict`).\n\nEnabled with `workspace.strict = true`. Default values hide caller\nobligations and let refactors silently drop arguments. Make callers pass\nevery argument on public core and port functions and every core/port record\nfield explicitly. Private helpers, lambdas, Protocol methods, exception\n`__init__` methods, `ClassVar` attributes, and `field(init=False)` fields\nare exempt."
   }
 ]

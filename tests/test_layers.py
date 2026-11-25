@@ -1,11 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from conftest import Project
-
-from leesh import reporting
-from leesh.loader import ManifestError
-from leesh.policy import Layer
+from conftest import ManifestError, Project
 
 WORKFLOW = "src/example/workflows/orders.py"
 ACTIVITY = "src/example/workflows/activities.py"
@@ -42,11 +38,11 @@ def module(path: str) -> str:
 
 def test_custom_layer_classifies_by_name_and_follows_its_base(workflows: Project) -> None:
     workflows.write({WORKFLOW: ""})
-    classification = workflows.load().classify(workflows.root / WORKFLOW)
+    classification = workflows.classify(WORKFLOW)
 
     assert classification is not None
-    assert (classification.name, classification.layer) == ("workflow", Layer.ROUTER)
-    assert reporting.describe(WORKFLOW, classification, "temporal") == (
+    assert (classification.name, classification.layer) == ("workflow", "router")
+    assert classification.raw == (
         f"{WORKFLOW}: workflow (a router) (temporal layout, src/*/workflows/*.py)"
     )
 
@@ -110,10 +106,14 @@ def test_custom_layer_inherits_forbidden_imports_and_extensions(project: Project
         workflow = ["requests"]
         """
     )
-    forbidden = project.load().policy.forbidden_imports
-
-    assert forbidden["workflow"] == {"sqlalchemy", "httpx", "legacy", "requests"}
-    assert forbidden[Layer.ROUTER] == {"sqlalchemy", "httpx", "legacy"}
+    assert project.lint(WORKFLOW, "import sqlalchemy\n") == ["LIT102"]
+    assert project.lint(WORKFLOW, "import httpx\n") == ["LIT102"]
+    assert project.lint(WORKFLOW, "import legacy\n") == ["LIT102"]
+    assert project.lint(WORKFLOW, "import requests\n") == ["LIT102"]
+    assert project.lint(ROUTER, "import sqlalchemy\n") == ["LIT102"]
+    assert project.lint(ROUTER, "import httpx\n") == ["LIT102"]
+    assert project.lint(ROUTER, "import legacy\n") == ["LIT102"]
+    assert project.lint(ROUTER, "import requests\n") == []
 
 
 def test_forbidden_calls_match_resolved_names(workflows: Project) -> None:
@@ -203,10 +203,9 @@ def test_custom_layout_globs_win_over_conventions_but_not_markers(project: Proje
     project.write(
         {"tests/fixtures/data.py": "", "tests/test_orders.py": "", "src/example/__init__.py": ""}
     )
-    workspace = project.load()
 
     def layer(path: str) -> str | None:
-        classification = workspace.classify(project.root / path)
+        classification = project.classify(path)
         return None if classification is None else classification.name
 
     assert layer("tests/fixtures/data.py") == "boundary"

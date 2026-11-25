@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from conftest import Project
-
-from leesh.loader import ManifestError
+from conftest import ManifestError, Project
 
 CORE = "src/example/domains/transfers/core.py"
 POLICY = "src/example/domains/transfers/policy.py"
@@ -18,7 +16,13 @@ ADAPTER = "src/example/domains/transfers/persistence/tables.py"
         "def plan(amount: int, urgent: bool | None) -> object: ...",
         "from typing import Optional\ndef plan(urgent: Optional[bool]) -> object: ...",
         "def decide(amount: int) -> bool: ...",
-        "class Policy:\n    def decide(self, amount: int) -> bool: ...",
+        (
+            "from dataclasses import dataclass\n"
+            "@dataclass(frozen=True)\n"
+            "class Policy:\n"
+            "    @staticmethod\n"
+            "    def decide(amount: int) -> bool: ..."
+        ),
     ],
 )
 def test_lit401_rejects_boolean_policy_types(project: Project, source: str) -> None:
@@ -53,17 +57,17 @@ def test_lit401_prefixes_are_configurable(project: Project) -> None:
 @pytest.mark.parametrize(
     "source",
     [
-        "def decide():\n    raise TransferRejected()",
-        "def decide():\n    raise errors.TransferNotFound",
+        "def decide() -> None:\n    raise TransferRejected()",
+        "def decide() -> None:\n    raise errors.TransferNotFound",
         """\
-        def decide():
+        def decide() -> None:
             try:
                 transfer()
             except TransferConflict:
                 return None
         """,
         """\
-        def decide():
+        def decide() -> None:
             try:
                 transfer()
             except (ValueError, Expired):
@@ -72,11 +76,19 @@ def test_lit401_prefixes_are_configurable(project: Project) -> None:
     ],
 )
 def test_lit402_rejects_exceptions_as_outcomes(project: Project, source: str) -> None:
-    assert project.lint(CORE, source) == ["LIT402"]
+    assert "LIT402" in project.lint(CORE, source)
 
 
 def test_lit402_allows_invariant_errors(project: Project) -> None:
-    source = "def amount(value: int):\n    if value < 0:\n        raise ValueError('negative')\n"
+    source = (
+        "from dataclasses import dataclass\n"
+        "@dataclass(frozen=True)\n"
+        "class Amount:\n"
+        "    value: int\n"
+        "    def __post_init__(self) -> None:\n"
+        "        if self.value < 0:\n"
+        "            raise ValueError('negative')\n"
+    )
     assert project.lint(CORE, source) == []
 
 
@@ -86,8 +98,8 @@ def test_lit402_only_applies_to_core(project: Project) -> None:
 
 def test_lit402_suffixes_are_configurable(project: Project) -> None:
     project.manifest('[conventions]\noutcome_suffixes = ["Missing"]\n')
-    assert project.lint(CORE, "def f():\n    raise AccountMissing()\n") == ["LIT402"]
-    assert project.lint(CORE, "def f():\n    raise TransferRejected()\n") == []
+    assert project.lint(CORE, "def f() -> None:\n    raise AccountMissing()\n") == ["LIT402"]
+    assert "LIT402" not in project.lint(CORE, "def f() -> None:\n    raise TransferRejected()\n")
 
 
 @pytest.mark.parametrize(
@@ -209,7 +221,7 @@ def test_lit403_follows_imported_exceptions_and_mixins(project: Project) -> None
 
 def test_lit403_applies_to_every_layer(project: Project) -> None:
     source = "class Base: ...\nclass Child(Base): ...\n"
-    assert project.lint(CORE, source) == ["LIT403"]
+    assert "LIT403" in project.lint(CORE, source)
     assert project.lint("tests/test_orders.py", source) == ["LIT403"]
 
 

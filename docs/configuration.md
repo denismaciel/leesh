@@ -16,6 +16,7 @@ findings.
 [workspace]
 kind = "server"            # default kind for every package
 layout = "domains"         # default layout for every package
+strict = false             # opt-in strict rules (LIT309 unit-test adapter imports, LIT404 record methods, LIT405, LIT406)
 override_budget = 0        # files that may use [[overrides]]
 dependency_override_budget = 0
 effectful_types = ["example.clock.Clock"]          # extends LIT207's catalog
@@ -69,7 +70,8 @@ own globs:
 
 | Glob | Layer |
 | --- | --- |
-| `conftest.py`, `tests/**/*.py` | `test` |
+| `tests/**/*.py` | `test` |
+| `conftest.py`, `tests/**/conftest.py`, `tests/**/{integration,integrations,persistence,e2e,contract,smoke,adapters,fixtures,helpers,fakes,testing}/**/*.py`, `tests/**/*_{integration,e2e}_test.py`, `tests/**/test_*_{integration,e2e}.py` | `integration_test` |
 | `scripts/**/*.py`, `examples/**/*.py` | `boundary` |
 | `migrations/**/*.py` | `transaction` |
 
@@ -153,7 +155,7 @@ outcome_suffixes = ["NotFound", "Denied"]
 extend_allowed_bases = ["ast.NodeVisitor", "fastapi.HTTPException"]
 ```
 
-The defaults are in [`src/leesh/policy.py`](../src/leesh/policy.py).
+The defaults are in [`rust/src/workspace.rs`](../rust/src/workspace.rs).
 
 Workspace modules that a layer may always import, whatever their own layer,
 are declared with a reason. Omit `layers` to allow every importer; a trailing
@@ -193,8 +195,9 @@ names needs its own entry, even with no dependencies, and a cycle such as
 ## Overrides
 
 A file that cannot move yet can be given a layer explicitly. Overrides need a
-reason and an issue, must be scoped below a package area (no `src/**/*.py`), and
-count against `override_budget`:
+reason and an issue, may set an optional `review_by = "YYYY-MM-DD"` date
+(expired dates fail with `LIT003`), must be scoped below a package area (no
+`src/**/*.py`), and count against `override_budget`:
 
 ```toml
 [workspace]
@@ -228,9 +231,10 @@ Two tools let an existing codebase adopt leesh before it is clean.
 
 `[[ignore]]` switches rules off where you have decided not to apply them yet.
 Each entry names rules by code or name, optionally limited to path globs
-(relative to the workspace root) and layers, and needs a reason. `LIT001` and
-`LIT003` cannot be ignored, and an entry that suppresses nothing in a full
-check is a `LIT003` finding:
+(relative to the workspace root) and layers, and needs a reason. Optional
+`review_by = "YYYY-MM-DD"` and `max_count = N` cap temporary ignores so they
+cannot silently grow or live forever. `LIT001` and `LIT003` cannot be ignored,
+and an entry that suppresses nothing in a full check is a `LIT003` finding:
 
 ```toml
 [[ignore]]

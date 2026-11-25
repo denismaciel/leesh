@@ -1,209 +1,374 @@
 use super::*;
+use crate::model::{BaseRef, ClassBaseCheck, TopDefKind};
+
 const DECLARATIVE: &[&str] = &[
     "sqlalchemy.ext.declarative.declarative_base",
     "sqlalchemy.orm.DeclarativeBase",
     "sqlalchemy.orm.DeclarativeBaseNoMeta",
     "sqlalchemy.orm.declarative_base",
 ];
-fn all_in(ns: &BTreeSet<String>, allowed: &BTreeSet<String>) -> bool {
-    !ns.is_empty()
-        && !ns.contains("?")
-        && ns.iter().all(|n| {
-            allowed.contains(n)
-                || allowed
-                    .iter()
-                    .any(|p| p.ends_with(".*") && n.starts_with(&p[..p.len() - 1]))
-        })
+
+#[inline]
+fn matches_allowed(name: &str, allowed: &BTreeSet<String>) -> bool {
+    allowed.contains(name)
+        || allowed
+            .iter()
+            .any(|p| p.ends_with(".*") && name.starts_with(&p[..p.len() - 1]))
 }
+
+#[inline]
+fn all_in_allowed(resolved: &[Box<str>], allowed: &BTreeSet<String>) -> bool {
+    !resolved.is_empty()
+        && resolved
+            .iter()
+            .all(|n| &**n != "?" && matches_allowed(n, allowed))
+}
+
+#[inline]
+fn all_in_static(resolved: &[Box<str>], allowed: &[&str]) -> bool {
+    !resolved.is_empty() && resolved.iter().all(|n| allowed.contains(&&**n))
+}
+
+#[inline]
+fn is_only_object(resolved: &[Box<str>]) -> bool {
+    resolved.len() == 1 && &*resolved[0] == "builtins.object"
+}
+
+fn local_target_name(base: &Node) -> Option<Box<str>> {
+    let target = if kind(base) == "Subscript" {
+        child(base, "value")
+    } else {
+        base
+    };
+    (kind(target) == "Name").then(|| s(target, "id").into())
+}
+
+pub(super) fn extract_summary(
+    file: &FileContext<'_>,
+    policy: &Policy,
+) -> (Box<[TopDef]>, Box<[ClassCheck]>) {
+    let mut top_defs = Vec::new();
+    for st in items(file.tree, "body") {
+        match kind(st) {
+            "ClassDef" => {
+                let bases: Box<[BaseRef]> = items(st, "bases")
+                    .iter()
+                    .map(|b| {
+                        let resolved = file.symbols.resolved_box(b);
+                        let local_target = if resolved.is_empty() {
+                            local_target_name(b)
+                        } else {
+                            None
+                        };
+                        BaseRef {
+                            resolved,
+                            local_target,
+                        }
+                    })
+                    .collect();
+                top_defs.push(TopDef {
+                    name: s(st, "name").into(),
+                    kind: TopDefKind::Class {
+                        id: ast::id(st) as u32,
+                        bases,
+                    },
+                });
+            }
+            "Assign" => {
+                let value = child(st, "value");
+                if !value.is_null() {
+                    let mut cached: Option<Box<[Box<str>]>> = None;
+                    let val_id = ast::id(value) as u32;
+                    for t in items(st, "targets") {
+                        if kind(t) == "Name" {
+                            let resolved = cached
+                                .get_or_insert_with(|| file.symbols.resolved_box(value))
+                                .clone();
+                            top_defs.push(TopDef {
+                                name: s(t, "id").into(),
+                                kind: TopDefKind::Value {
+                                    id: val_id,
+                                    resolved,
+                                },
+                            });
+                        }
+                    }
+                }
+            }
+            "AnnAssign" => {
+                let target = child(st, "target");
+                let value = child(st, "value");
+                if kind(target) == "Name" && !value.is_null() {
+                    top_defs.push(TopDef {
+                        name: s(target, "id").into(),
+                        kind: TopDefKind::Value {
+                            id: ast::id(value) as u32,
+                            resolved: file.symbols.resolved_box(value),
+                        },
+                    });
+                }
+            }
+            "ImportFrom" => {
+                if let Some(imported) = symbols::absolute_module(st, file.package) {
+                    for a in items(st, "names") {
+                        let asname = s(a, "asname");
+                        let orig = s(a, "name");
+                        let local = if asname.is_empty() { orig } else { asname };
+                        top_defs.push(TopDef {
+                            name: local.into(),
+                            kind: TopDefKind::Import {
+                                target: format!("{imported}.{orig}").into(),
+                            },
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut classes = Vec::new();
+    if !file.layer().is_empty() {
+        let allowed = &policy.allowed_bases;
+        for &n in file.nodes {
+            if kind(n) != "ClassDef" {
+                continue;
+            }
+            let bases = items(n, "bases");
+            if bases.is_empty() {
+                continue;
+            }
+            let mut has_declarative_base = false;
+            let mut unchecked_bases = Vec::new();
+            for base in bases {
+                if !file.symbols.is_unknown(base)
+                    && file.symbols.all(base, |v| DECLARATIVE.contains(&v))
+                {
+                    has_declarative_base = true;
+                }
+                if !file.symbols.is_unknown(base)
+                    && file
+                        .symbols
+                        .all(base, |v| v != "?" && matches_allowed(v, allowed))
+                {
+                    continue;
+                }
+                let resolved = file.symbols.resolved_box(base);
+                let local_target = if resolved.is_empty() {
+                    local_target_name(base)
+                } else {
+                    None
+                };
+                let (line, col) = base.position().unwrap_or((1, 0));
+                unchecked_bases.push(ClassBaseCheck {
+                    line: line as u32,
+                    column: col as u32,
+                    resolved,
+                    local_unparsed: defaults::unparse(base).into_boxed_str(),
+                    local_target,
+                });
+            }
+            if !unchecked_bases.is_empty() {
+                classes.push(ClassCheck {
+                    name: s(n, "name").into(),
+                    id: ast::id(n) as u32,
+                    has_declarative_base,
+                    bases: unchecked_bases.into_boxed_slice(),
+                });
+            }
+        }
+    }
+    (top_defs.into_boxed_slice(), classes.into_boxed_slice())
+}
+
+fn def_id(def: &TopDef) -> u32 {
+    match &def.kind {
+        TopDefKind::Class { id, .. } | TopDefKind::Value { id, .. } => *id,
+        TopDefKind::Import { .. } => 0,
+    }
+}
+
 fn definition<'a>(
     name: &str,
     w: &'a Workspace,
     seen: &mut HashSet<String>,
-) -> Option<(&'a Node, &'a Source)> {
+) -> Option<(&'a TopDef, usize)> {
     if !seen.insert(name.into()) {
         return None;
     }
     let (module, attribute) = name.rsplit_once('.')?;
-    let source = w.module_source(module)?;
-    for st in items(&source.tree, "body") {
-        if kind(st) == "ClassDef" && s(st, "name") == attribute {
-            return Some((st, source));
+    let source_idx = w.module_index(module)?;
+    let source = &w.sources[source_idx];
+    for def in &source.top_defs {
+        if &*def.name != attribute {
+            continue;
         }
-        if kind(st) == "Assign"
-            && items(st, "targets")
-                .iter()
-                .any(|t| kind(t) == "Name" && s(t, "id") == attribute)
-            || kind(st) == "AnnAssign"
-                && kind(child(st, "target")) == "Name"
-                && s(child(st, "target"), "id") == attribute
-        {
-            let value = child(st, "value");
-            if !value.is_null() {
-                return Some((value, source));
+        match &def.kind {
+            TopDefKind::Class { .. } | TopDefKind::Value { .. } => {
+                return Some((def, source_idx));
             }
-        }
-        if kind(st) == "ImportFrom"
-            && let Some(imported) = symbols::absolute_module(st, source.package.as_deref())
-        {
-            for a in items(st, "names") {
-                let local = if s(a, "asname").is_empty() {
-                    s(a, "name")
-                } else {
-                    s(a, "asname")
-                };
-                if local == attribute {
-                    return definition(&format!("{imported}.{}", s(a, "name")), w, seen);
-                }
+            TopDefKind::Import { target } => {
+                return definition(target, w, seen);
             }
         }
     }
     None
 }
-fn bases<'a>(
-    base: &Node,
-    scope: &'a Source,
+
+fn resolve_bases<'a>(
+    resolved: &[Box<str>],
+    local_target: Option<&str>,
+    scope_idx: usize,
     w: &'a Workspace,
-) -> Option<Vec<(&'a Node, &'a Source)>> {
-    let ns = names(scope, base);
-    if ns == BTreeSet::from(["?".into()]) {
-        let target = if kind(base) == "Subscript" {
-            child(base, "value")
-        } else {
-            base
-        };
-        return items(&scope.tree, "body")
+) -> Option<Vec<(&'a TopDef, usize)>> {
+    if resolved.is_empty() {
+        let target = local_target?;
+        let scope = &w.sources[scope_idx];
+        return scope
+            .top_defs
             .iter()
-            .find(|n| {
-                kind(target) == "Name" && kind(n) == "ClassDef" && s(n, "name") == s(target, "id")
-            })
-            .map(|n| vec![(n, scope)]);
+            .find(|d| matches!(d.kind, TopDefKind::Class { .. }) && &*d.name == target)
+            .map(|d| vec![(d, scope_idx)]);
     }
-    ns.iter()
-        .map(|n| definition(n, w, &mut HashSet::new()))
-        .collect()
-}
-fn extendable(n: &Node, scope: &Source, allowed: &BTreeSet<String>) -> bool {
-    if kind(n) != "ClassDef" {
-        return all_in(&names(scope, n), allowed);
+    let mut out = Vec::with_capacity(resolved.len());
+    for n in resolved {
+        if &**n == "?" {
+            return None;
+        }
+        out.push(definition(n, w, &mut HashSet::new())?);
     }
-    let ns = items(n, "bases")
-        .iter()
-        .map(|n| names(scope, n))
-        .collect::<Vec<_>>();
-    ns.iter()
-        .any(|n| *n != BTreeSet::from(["builtins.object".into()]))
-        && ns.iter().all(|n| all_in(n, allowed))
+    Some(out)
 }
-fn declarative(n: &Node, scope: &Source) -> bool {
-    let allowed = DECLARATIVE.iter().map(|s| s.to_string()).collect();
-    if kind(n) == "ClassDef" {
-        items(n, "bases")
-            .iter()
-            .any(|b| all_in(&names(scope, b), &allowed))
-    } else {
-        all_in(&names(scope, n), &allowed)
+
+fn extendable(def: &TopDef, allowed: &BTreeSet<String>) -> bool {
+    match &def.kind {
+        TopDefKind::Class { bases, .. } => {
+            bases.iter().any(|b| !is_only_object(&b.resolved))
+                && bases.iter().all(|b| all_in_allowed(&b.resolved, allowed))
+        }
+        TopDefKind::Value { resolved, .. } => all_in_allowed(resolved, allowed),
+        TopDefKind::Import { .. } => false,
     }
 }
-fn plain(n: &Node, scope: &Source) -> bool {
-    kind(n) == "ClassDef"
-        && items(n, "bases")
+
+fn declarative(def: &TopDef) -> bool {
+    match &def.kind {
+        TopDefKind::Class { bases, .. } => bases
             .iter()
-            .all(|b| names(scope, b) == BTreeSet::from(["builtins.object".into()]))
+            .any(|b| all_in_static(&b.resolved, DECLARATIVE)),
+        TopDefKind::Value { resolved, .. } => all_in_static(resolved, DECLARATIVE),
+        TopDefKind::Import { .. } => false,
+    }
 }
-fn exception(n: &Node, scope: &Source, w: &Workspace, seen: &mut HashSet<(String, usize)>) -> bool {
-    if kind(n) != "ClassDef" || !seen.insert((scope.filename.clone(), ast::id(n))) {
+
+fn plain(def: &TopDef) -> bool {
+    match &def.kind {
+        TopDefKind::Class { bases, .. } => bases.iter().all(|b| is_only_object(&b.resolved)),
+        _ => false,
+    }
+}
+
+fn exception(
+    def: &TopDef,
+    scope_idx: usize,
+    w: &Workspace,
+    seen: &mut HashSet<(usize, u32)>,
+) -> bool {
+    let TopDefKind::Class { id, bases } = &def.kind else {
+        return false;
+    };
+    if !seen.insert((scope_idx, *id)) {
         return false;
     }
-    for b in items(n, "bases") {
-        let ns = names(scope, b);
-        if !ns.is_empty() && ns.iter().all(|n| BUILTIN_EXCEPTIONS.contains(&n.as_str())) {
+    for b in bases {
+        if !b.resolved.is_empty()
+            && b.resolved
+                .iter()
+                .all(|n| BUILTIN_EXCEPTIONS.contains(&&**n))
+        {
             return true;
         }
-        if let Some(ds) = bases(b, scope, w)
+        if let Some(ds) = resolve_bases(&b.resolved, b.local_target.as_deref(), scope_idx, w)
             && ds
                 .into_iter()
-                .any(|(n, s)| exception(n, s, w, &mut seen.clone()))
+                .any(|(d, s_idx)| exception(d, s_idx, w, &mut seen.clone()))
         {
             return true;
         }
     }
     false
 }
-pub(super) fn check(file: &Source, w: &Workspace, out: &mut Vec<Finding>) {
-    if file.layer().is_empty() {
+
+pub(super) fn check(file_idx: usize, file: &Source, w: &Workspace, out: &mut Vec<Finding>) {
+    if file.classes.is_empty() {
         return;
     }
     let allowed = &w.policy.allowed_bases;
-    let declarative_names = DECLARATIVE.iter().map(|n| n.to_string()).collect();
-    for n in walk(&file.tree) {
-        if kind(n) != "ClassDef" {
-            continue;
-        }
-        let mut rejected = vec![];
-        let mut mixins = vec![];
-        let mut is_declarative = false;
-        for base in items(n, "bases") {
-            let ns = names(file, base);
-            if all_in(&ns, &declarative_names) {
-                is_declarative = true
-            }
-            if all_in(&ns, allowed) {
-                continue;
-            }
-            let unknown = ns == BTreeSet::from(["?".into()]);
-            let local = defaults::unparse(base);
+    for cls in &file.classes {
+        let mut rejected: Vec<(&ClassBaseCheck, String)> = Vec::new();
+        let mut mixins: Vec<(&ClassBaseCheck, String)> = Vec::new();
+        let mut is_declarative = cls.has_declarative_base;
+        for base in &cls.bases {
+            let unknown = base.resolved.is_empty();
             let mut described = if unknown {
-                format!("'{local}', a workspace class")
+                format!("'{}', a workspace class", base.local_unparsed)
             } else {
-                joined(&ns)
+                base.resolved.join(", ")
             };
-            let ds = bases(base, file, w);
+            let ds = resolve_bases(&base.resolved, base.local_target.as_deref(), file_idx, w);
             if ds.is_none()
                 || ds.as_ref().is_some_and(|ds| {
-                    ds.iter().any(|(d, scope)| {
-                        scope.filename == file.filename && ast::id(d) == ast::id(n)
-                    })
+                    ds.iter()
+                        .any(|(d, s_idx)| *s_idx == file_idx && def_id(d) == cls.id)
                 })
             {
                 if unknown {
-                    described = format!("'{local}', which leesh cannot resolve")
+                    described = format!("'{}', which leesh cannot resolve", base.local_unparsed);
                 }
                 rejected.push((base, described));
                 continue;
             }
             let ds = ds.unwrap();
-            if ds.iter().all(|(d, s)| declarative(d, s)) {
-                is_declarative = true
+            if ds.iter().all(|(d, _)| declarative(d)) {
+                is_declarative = true;
             }
-            if ds
-                .iter()
-                .all(|(d, s)| extendable(d, s, allowed) || exception(d, s, w, &mut HashSet::new()))
-            {
+            if ds.iter().all(|(d, s_idx)| {
+                extendable(d, allowed) || exception(d, *s_idx, w, &mut HashSet::new())
+            }) {
                 continue;
             }
-            if ds.iter().all(|(d, s)| plain(d, s)) {
-                mixins.push((base, described))
+            if ds.iter().all(|(d, _)| plain(d)) {
+                mixins.push((base, described));
             } else {
-                rejected.push((base, described))
+                rejected.push((base, described));
             }
         }
         if !is_declarative {
-            rejected.extend(mixins)
+            rejected.extend(mixins);
         }
         for (base, description) in rejected {
-            let ns = names(file, base);
-            let local = defaults::unparse(base);
-            let target = if ns != BTreeSet::from(["?".into()]) {
-                joined(&ns)
+            let target = if !base.resolved.is_empty() {
+                base.resolved.join(", ")
             } else if let Some(module) = &file.module {
-                format!("{module}.{local}")
+                format!("{module}.{}", base.local_unparsed)
             } else {
-                local
+                base.local_unparsed.to_string()
             };
-            out.push(finding(file,base,"LIT403",format!("'{}' extends {description}, which is not an allowed base; compose, or implement a Protocol (extend conventions.allowed_bases for framework bases)",s(n,"name")),Some(target)));
+            out.push(finding_at(
+                &file.filename,
+                base.line as usize,
+                base.column as usize,
+                "LIT403",
+                format!(
+                    "'{}' extends {description}, which is not an allowed base; compose, or implement a Protocol (extend conventions.allowed_bases for framework bases)",
+                    cls.name
+                ),
+                Some(target),
+            ));
         }
     }
 }
+
 const BUILTIN_EXCEPTIONS: &[&str] = &[
     "builtins.ArithmeticError",
     "builtins.AssertionError",

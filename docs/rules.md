@@ -11,23 +11,32 @@
 | [LIT102](#lit102) | `forbidden-import` | A module imports a third-party package its layer may not use. |
 | [LIT103](#lit103) | `client-imports-server` | A client package imports a server package from the same workspace. |
 | [LIT104](#lit104) | `cross-domain-import` | A domain imports another domain it does not declare, or that domain's internals. |
+| [LIT105](#lit105) | `import-cycle` | A workspace module participates in a circular import chain. |
+| [LIT106](#lit106) | `deferred-import` | Code hides an import inside a function or a `TYPE_CHECKING` block. |
 | [LIT201](#lit201) | `nondeterminism` | Code reads the clock, randomness, or fresh IDs directly. |
 | [LIT202](#lit202) | `io-in-core` | Core or port code performs I/O. |
-| [LIT203](#lit203) | `ambient-state` | Core or port code reads or writes state it was not given. |
+| [LIT203](#lit203) | `ambient-state` | Code reads or writes state it was not given. |
 | [LIT204](#lit204) | `borrowed-mutation` | Core or port code mutates a value it received as an argument. |
 | [LIT205](#lit205) | `frozen-values` | A core or port record is mutable. |
 | [LIT206](#lit206) | `async-in-core` | Core code awaits or schedules concurrent work. |
 | [LIT207](#lit207) | `effectful-capability` | A core function takes a parameter that can perform effects. |
 | [LIT208](#lit208) | `dynamic-code` | Core or port code runs code or loads modules chosen at run time. |
+| [LIT209](#lit209) | `untyped-core` | Core or port code omits type annotations or uses untyped escape hatches. |
 | [LIT301](#lit301) | `environment-access` | Code outside the edges reads environment variables. |
 | [LIT302](#lit302) | `transaction-boundary` | Code outside a transaction boundary calls `commit()` or `rollback()`. |
-| [LIT303](#lit303) | `router-construction` | A router constructs its own infrastructure. |
+| [LIT303](#lit303) | `router-construction` | A router or shell constructs its own infrastructure. |
 | [LIT304](#lit304) | `mocking` | A test patches code instead of passing fakes in. |
 | [LIT305](#lit305) | `immutable-defaults` | A parameter default is not an immutable value. |
 | [LIT306](#lit306) | `forbidden-call` | A module calls a function its layer may not call. |
+| [LIT307](#lit307) | `broad-except` | Code outside the edges swallows broad exceptions. |
+| [LIT308](#lit308) | `defensive-duck-typing` | Core or shell code uses duck-typing or type-cast workarounds. |
+| [LIT309](#lit309) | `test-hygiene` | Tests sleep on real time, or (in strict mode) unit tests import adapters. |
 | [LIT401](#lit401) | `boolean-policy` | A public core function takes a boolean, or returns one without a predicate name. |
 | [LIT402](#lit402) | `expected-outcome` | Core code raises or catches an expected outcome. |
 | [LIT403](#lit403) | `restricted-subclassing` | A class extends a base that is not on the allowlist. |
+| [LIT404](#lit404) | `core-classes` | Core code defines plain behavior classes, or (in strict mode) methods on records. |
+| [LIT405](#lit405) | `core-exceptions` | Core code raises exceptions outside `__post_init__` (opt-in via `workspace.strict`). |
+| [LIT406](#lit406) | `explicit-arguments` | Public core/port signatures or records define defaults (opt-in via `workspace.strict`). |
 
 ## Workspace
 
@@ -66,8 +75,9 @@ What each layer and package may import.
 `layer-dependency`: A module imports a layer its own layer may not depend on.
 
 The allowed targets per layer come from `[layer_dependencies]`; by default
-core and port import only core and port, shell adds shell, adapter adds
-adapter, and routers import shell, boundary, router and transaction modules.
+core imports only core, port imports core and port, shell adds shell,
+adapter adds adapter, and routers import shell, boundary, router and
+transaction modules.
 Other layers are unrestricted, except that only test code may import test
 code, so a composition root cannot wire a fake into production. A custom
 layer uses its base layer's entry unless it has its own, and counts as its
@@ -114,6 +124,24 @@ needs its own entry, and a cycle is a manifest error. `shared/`,
 are followed through package `__init__` modules and re-exports, as for
 LIT101, and `[[dependency_overrides]]` exempts one deliberate edge.
 
+### LIT105
+
+`import-cycle`: A workspace module participates in a circular import chain.
+
+Modules form a directed acyclic graph. Circular imports couple modules
+together and push code toward `TYPE_CHECKING` and local-import hacks.
+Extract shared values into a lower module so imports flow one way.
+`[[dependency_overrides]]` exempts one deliberate edge.
+
+### LIT106
+
+`deferred-import`: Code hides an import inside a function or a `TYPE_CHECKING` block.
+
+Outside boundary and test modules, imports belong at module top level;
+function-body imports obscure dependencies and paper over import cycles.
+In core and port modules, `if TYPE_CHECKING:` blocks are also reported:
+restructure shared types instead of hiding circular or cross-layer edges.
+
 ## Core purity
 
 Core and port code computes from values it is given.
@@ -142,13 +170,18 @@ shell and pass the result into the core.
 
 ### LIT203
 
-`ambient-state`: Core or port code reads or writes state it was not given.
+`ambient-state`: Code reads or writes state it was not given.
 
-Reports process-wide context (working directory, locale, decimal context,
-context variables), writes through `global`/`nonlocal`, and reads of
-mutable module-level collections and iterators (`[]`, `defaultdict()`,
-`deque()`, `itertools.count()`). Pass the value in and return the new
-state instead. Environment variables are covered by LIT301.
+In core and port modules, reports process-wide context (working directory,
+locale, decimal context, context variables) and `nonlocal` writes. Across
+core, port, shell, adapter and router modules, reports `global` writes and
+reads of mutable module-level collections, iterators, locks, queues, and
+client singletons (`[]`, `defaultdict()`, `deque()`, `threading.Lock()`,
+`httpx.Client()`, ...). Outside core (port, shell, adapter, router), also
+reports stateful cache decorators (`@functools.cache`,
+`@functools.lru_cache`); pure core functions may still memoize. Pass values
+in and return the new state instead. Environment variables are covered by
+LIT301.
 
 ### LIT204
 
@@ -172,10 +205,11 @@ of a `NamedTuple`, may not be annotated with mutable collections (`list`,
 `dict`, `set`, `bytearray`, `deque`, `defaultdict`, `OrderedDict`,
 `Counter`, `ChainMap`, or the `typing` and `collections.abc` mutable
 protocols), in string annotations too, or built by a `default_factory`
-that returns one. `object.__setattr__(self, ...)` writes to a frozen record
-and is reported outside `__post_init__`, where it sets derived fields.
-`ClassVar` fields are exempt. Use tuples, frozensets, or read-only
-`Mapping`/`Sequence` interfaces.
+that returns one. `object.__setattr__` and `object.__delattr__` write to
+frozen records and are reported everywhere except
+`object.__setattr__(self, ...)` inside `__post_init__`, where it sets
+derived fields. `ClassVar` fields are exempt. Use tuples, frozensets, or
+read-only `Mapping`/`Sequence` interfaces.
 
 ### LIT206
 
@@ -201,12 +235,24 @@ effectful collaborators.
 `dynamic-code`: Core or port code runs code or loads modules chosen at run time.
 
 `eval`, `exec`, `compile`, `__import__`, `importlib.import_module`,
-`globals`, `locals`, `breakpoint`, and `pickle`, `marshal`, `shelve` and
-`runpy` execute or reach code no other rule can see, so one call undoes
-every purity rule. Import the module and call the function by name; parse
-serialized data at a boundary. `getattr` with a literal name is read as the
-attribute it spells, so `getattr(os, "environ")` is reported like
-`os.environ`.
+`globals`, `locals`, `breakpoint`, `setattr`, `delattr`, `vars`, `__dict__`,
+dynamic `getattr` (with a non-literal attribute name), and `pickle`,
+`marshal`, `shelve` and `runpy` execute or reach code no other rule can see,
+so one call undoes every purity rule. Import the module and call the
+function by name; parse serialized data at a boundary. `getattr` with a
+literal name is read as the attribute it spells, so `getattr(os, "environ")`
+is reported like `os.environ`.
+
+### LIT209
+
+`untyped-core`: Core or port code omits type annotations or uses untyped escape hatches.
+
+Every parameter (except `self` and `cls`) and return type in core and port
+modules must be annotated, because unannotated signatures hide capabilities
+(LIT207) and boolean flags (LIT401). `Any`, unparameterized containers
+(`dict`, `list`, `set`, `tuple`, `frozenset`, `Mapping`, `Sequence`), and
+`TypedDict` classes are also reported: parse external data into typed
+frozen dataclasses at a boundary.
 
 ## Edges
 
@@ -232,22 +278,25 @@ transaction and test modules may call them.
 
 ### LIT303
 
-`router-construction`: A router constructs its own infrastructure.
+`router-construction`: A router or shell constructs its own infrastructure.
 
-Routers receive repositories, clients, engines and settings through
-dependency injection; they never build them. Calls to anything named
-`*Repository`, `*Client` or `*Engine`, `create_engine`,
-`create_async_engine` or `load_settings` are reported, matched by resolved
-name when the import is known.
+Routers and shells receive repositories, clients, engines, adapters and
+settings through dependency injection; they never build them. Calls to
+anything named `*Repository`, `*Client` or `*Engine`, `create_engine`,
+`create_async_engine`, `load_settings`, I/O client packages (`httpx`,
+`requests`, `redis`, ...), or workspace adapter callables are reported,
+matched by resolved name when the import is known.
 
 ### LIT304
 
 `mocking`: A test patches code instead of passing fakes in.
 
-Reports `unittest.mock`, pytest-mock fixtures (`mocker` and friends) and
-`monkeypatch` methods in test modules. If a test needs to replace a
-collaborator, the code under test should accept it as a port; pass a
-hand-written fake that implements it.
+Reports `unittest.mock`, pytest-mock fixtures (`mocker` and friends),
+`monkeypatch` / `pytest.MonkeyPatch`, patching libraries (`freezegun`,
+`time_machine`, `respx`, `responses`, `httpretty`, `mock`), and direct
+module-attribute patching (`mod.attr = fake`, `setattr(mod, ...)`) in test
+modules. If a test needs to replace a collaborator, the code under test
+should accept it as a port; pass a hand-written fake that implements it.
 
 ### LIT305
 
@@ -273,6 +322,35 @@ the workflow's own timer. Calls are matched by resolved name, so aliases
 and `from` imports count. A custom layer inherits its base layer's list
 unless it has its own.
 
+### LIT307
+
+`broad-except`: Code outside the edges swallows broad exceptions.
+
+Bare `except:`, `except BaseException:`, and `except Exception:` hide bugs
+and turn failures into silent wrong behavior. Outside boundary, router and
+test modules, catch specific exception types or handle broad failures at
+the edge. Handlers whose final statement is a `raise` (cleanup and re-raise
+or error translation) are allowed.
+
+### LIT308
+
+`defensive-duck-typing`: Core or shell code uses duck-typing or type-cast workarounds.
+
+`hasattr` and three-argument `getattr(obj, name, default)` in core and
+shell, plus `typing.cast` in core, mask mismatched shapes instead of fixing
+the data model. Parse values into typed dataclasses at the boundary and
+narrow them explicitly.
+
+### LIT309
+
+`test-hygiene`: Tests sleep on real time, or (in strict mode) unit tests import adapters.
+
+`time.sleep` makes tests slow and flaky; inject a clock or synchronize
+explicitly. With `workspace.strict = true`, unit tests (layer `test`) may
+not import concrete adapter modules; integration, contract, e2e, and
+adapter tests belong in the `integration_test` layer (configurable via
+`[layouts.<name>]`).
+
 ## Conventions
 
 Naming that keeps decisions explicit. Configurable.
@@ -284,7 +362,8 @@ Naming that keeps decisions explicit. Configurable.
 A `bool` parameter is a hidden mode switch; replace it with an enum or a
 named value type. A function returning `bool` must be named as a question,
 with one of the prefixes in `conventions.predicate_prefixes` (default `is_`,
-`has_`, `can_`, `should_`, `allows_`, `contains_`, `matches_`). Private
+`has_`, `can_`, `should_`, `allows_`, `contains_`, `matches_`). String
+annotations, `Annotated`, unions, and local aliases are resolved. Private
 functions are exempt.
 
 ### LIT402
@@ -315,3 +394,35 @@ may nest to any depth. A table that extends a declarative base may also mix
 in plain workspace classes, such as a `ProjectOwned` holding shared columns.
 Entries ending in `.*` allow a whole module. Set `conventions.allowed_bases`
 to replace the list, or `conventions.extend_allowed_bases` to add to it.
+
+### LIT404
+
+`core-classes`: Core code defines plain behavior classes, or (in strict mode) methods on records.
+
+Core modules should model data as frozen dataclasses, `NamedTuple`s, or
+enums and express behavior as pure module-level functions. Plain classes
+without a data/protocol/exception role are always reported. With
+`workspace.strict = true`, public instance methods on core records
+(outside `@property`, `@cached_property`, `@classmethod`, and
+`@staticmethod`) are also reported.
+
+### LIT405
+
+`core-exceptions`: Core code raises exceptions outside `__post_init__` (opt-in via `workspace.strict`).
+
+Enabled with `workspace.strict = true`. Core functions compute total
+decisions over typed values and return named results. Raise exceptions only
+for construction invariants inside `__post_init__` (or `AssertionError` /
+`NotImplementedError` guards); handle operational failures at edges.
+Expected-outcome exceptions remain reported under LIT402.
+
+### LIT406
+
+`explicit-arguments`: Public core/port signatures or records define defaults (opt-in via `workspace.strict`).
+
+Enabled with `workspace.strict = true`. Default values hide caller
+obligations and let refactors silently drop arguments. Make callers pass
+every argument on public core and port functions and every core/port record
+field explicitly. Private helpers, lambdas, Protocol methods, exception
+`__init__` methods, `ClassVar` attributes, and `field(init=False)` fields
+are exempt.

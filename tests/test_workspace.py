@@ -1,85 +1,76 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 import pytest
-from conftest import Project
-
-from leesh import engine
-from leesh.layouts import LayerPattern
-from leesh.loader import ManifestError
-from leesh.policy import FORBIDDEN_IMPORTS, Layer
-from leesh.rules.registry import ALL_RULES
-from leesh.workspace import Kind, Origin
+from conftest import ManifestError, Project
 
 
-def layer_of(project: Project, path: str) -> Layer | None:
+def layer_of(project: Project, path: str) -> str | None:
     project.write({path: ""})
-    classification = project.load().classify(project.root / path)
+    classification = project.classify(path)
     return None if classification is None else classification.layer
 
 
 @pytest.mark.parametrize(
     ("path", "layer"),
     [
-        ("src/example/__init__.py", Layer.MARKER),
-        ("src/example/__main__.py", Layer.BOUNDARY),
-        ("src/example/app/main.py", Layer.BOUNDARY),
-        ("src/example/app/config.py", Layer.BOUNDARY),
-        ("src/example/app/routers/orders.py", Layer.ROUTER),
-        ("src/example/app/router/orders.py", Layer.ROUTER),
-        ("src/example/app/api/orders_router.py", Layer.ROUTER),
-        ("src/example/app/router.py", Layer.ROUTER),
-        ("src/example/app/dependencies.py", Layer.TRANSACTION),
-        ("src/example/domains/orders/core.py", Layer.CORE),
-        ("src/example/domains/orders/model.py", Layer.CORE),
-        ("src/example/domains/orders/approval/policy.py", Layer.CORE),
-        ("src/example/domains/orders/ports.py", Layer.PORT),
-        ("src/example/domains/orders/service.py", Layer.SHELL),
-        ("src/example/domains/orders/boundary.py", Layer.BOUNDARY),
-        ("src/example/domains/orders/persistence/repository.py", Layer.ADAPTER),
-        ("src/example/domains/orders/core/pricing.py", Layer.CORE),
-        ("src/example/domains/orders/core/renewal/terms.py", Layer.CORE),
-        ("src/example/domains/orders/core/ports.py", Layer.CORE),
-        ("src/example/domains/orders/model/order.py", Layer.CORE),
-        ("src/example/domains/orders/approval/policy/limits.py", Layer.CORE),
-        ("src/example/domains/orders/event/placed.py", Layer.CORE),
-        ("src/example/domains/orders/ports/payments.py", Layer.PORT),
-        ("src/example/domains/orders/service/checkout.py", Layer.SHELL),
-        ("src/example/domains/orders/boundary/schemas.py", Layer.BOUNDARY),
-        ("src/example/domains/orders/core/persistence/tables.py", Layer.ADAPTER),
-        ("src/example/domains/policy/service.py", Layer.SHELL),
+        ("src/example/__init__.py", "marker"),
+        ("src/example/__main__.py", "boundary"),
+        ("src/example/app/main.py", "boundary"),
+        ("src/example/app/config.py", "boundary"),
+        ("src/example/app/routers/orders.py", "router"),
+        ("src/example/app/router/orders.py", "router"),
+        ("src/example/app/api/orders_router.py", "router"),
+        ("src/example/app/router.py", "router"),
+        ("src/example/app/dependencies.py", "transaction"),
+        ("src/example/domains/orders/core.py", "core"),
+        ("src/example/domains/orders/model.py", "core"),
+        ("src/example/domains/orders/approval/policy.py", "core"),
+        ("src/example/domains/orders/ports.py", "port"),
+        ("src/example/domains/orders/service.py", "shell"),
+        ("src/example/domains/orders/boundary.py", "boundary"),
+        ("src/example/domains/orders/persistence/repository.py", "adapter"),
+        ("src/example/domains/orders/core/pricing.py", "core"),
+        ("src/example/domains/orders/core/renewal/terms.py", "core"),
+        ("src/example/domains/orders/core/ports.py", "core"),
+        ("src/example/domains/orders/model/order.py", "core"),
+        ("src/example/domains/orders/approval/policy/limits.py", "core"),
+        ("src/example/domains/orders/event/placed.py", "core"),
+        ("src/example/domains/orders/ports/payments.py", "port"),
+        ("src/example/domains/orders/service/checkout.py", "shell"),
+        ("src/example/domains/orders/boundary/schemas.py", "boundary"),
+        ("src/example/domains/orders/core/persistence/tables.py", "adapter"),
+        ("src/example/domains/policy/service.py", "shell"),
         ("src/example/domains/event/sourcing.py", None),
-        ("src/example/projections/summary/model.py", Layer.CORE),
-        ("src/example/projections/summary/model/totals.py", Layer.CORE),
-        ("src/example/projections/summary/service/refresh.py", Layer.SHELL),
-        ("src/example/shared/core/money.py", Layer.CORE),
-        ("src/example/shared/ports/clock.py", Layer.PORT),
-        ("src/example/projections/summary/persistence/queries.py", Layer.ADAPTER),
-        ("src/example/shared/model.py", Layer.CORE),
-        ("src/example/db/base.py", Layer.ADAPTER),
-        ("src/example/db/orders/repo.py", Layer.ADAPTER),
-        ("src/example/db/unit_of_work.py", Layer.TRANSACTION),
-        ("src/example/db/unit_of_work/sql.py", Layer.TRANSACTION),
-        ("src/example/integrations/payments.py", Layer.ADAPTER),
-        ("src/example/domains/orders/fakes.py", Layer.TEST),
-        ("src/example/shared/fakes.py", Layer.TEST),
-        ("src/example/db/fakes.py", Layer.TEST),
-        ("src/example/integrations/gmail/fake.py", Layer.TEST),
-        ("src/example/integrations/fakes/gmail.py", Layer.TEST),
-        ("src/example/integrations/unit_of_work/sql.py", Layer.TRANSACTION),
-        ("tests/domains/orders/test_core.py", Layer.TEST),
-        ("conftest.py", Layer.TEST),
-        ("scripts/backfill.py", Layer.BOUNDARY),
-        ("examples/usage.py", Layer.BOUNDARY),
-        ("migrations/versions/0001.py", Layer.TRANSACTION),
+        ("src/example/projections/summary/model.py", "core"),
+        ("src/example/projections/summary/model/totals.py", "core"),
+        ("src/example/projections/summary/service/refresh.py", "shell"),
+        ("src/example/shared/core/money.py", "core"),
+        ("src/example/shared/ports/clock.py", "port"),
+        ("src/example/projections/summary/persistence/queries.py", "adapter"),
+        ("src/example/shared/model.py", "core"),
+        ("src/example/db/base.py", "adapter"),
+        ("src/example/db/orders/repo.py", "adapter"),
+        ("src/example/db/unit_of_work.py", "transaction"),
+        ("src/example/db/unit_of_work/sql.py", "transaction"),
+        ("src/example/integrations/payments.py", "adapter"),
+        ("src/example/domains/orders/fakes.py", "test"),
+        ("src/example/shared/fakes.py", "test"),
+        ("src/example/db/fakes.py", "test"),
+        ("src/example/integrations/gmail/fake.py", "test"),
+        ("src/example/integrations/fakes/gmail.py", "test"),
+        ("src/example/integrations/unit_of_work/sql.py", "transaction"),
+        ("tests/domains/orders/test_core.py", "test"),
+        ("conftest.py", "test"),
+        ("scripts/backfill.py", "boundary"),
+        ("examples/usage.py", "boundary"),
+        ("migrations/versions/0001.py", "transaction"),
         ("src/example/orders.py", None),
         ("src/example/domains/orders/repository.py", None),
         ("setup.py", None),
     ],
 )
 def test_default_manifest_uses_the_domains_layout(
-    project: Project, path: str, layer: Layer | None
+    project: Project, path: str, layer: str | None
 ) -> None:
     assert layer_of(project, path) == layer
 
@@ -87,31 +78,31 @@ def test_default_manifest_uses_the_domains_layout(
 @pytest.mark.parametrize(
     ("layout", "path", "layer"),
     [
-        ("hexagonal", "src/example/rules.py", Layer.CORE),
-        ("hexagonal", "src/example/domain/orders/ports.py", Layer.PORT),
-        ("hexagonal", "src/example/application/orders.py", Layer.SHELL),
-        ("hexagonal", "src/example/application/orders_errors.py", Layer.CORE),
-        ("hexagonal", "src/example/adapters/sql/database.py", Layer.TRANSACTION),
-        ("hexagonal", "src/example/web/routes.py", Layer.BOUNDARY),
-        ("hexagonal", "src/example/development.py", Layer.BOUNDARY),
-        ("flat", "src/example/anything/at/all.py", Layer.SHELL),
-        ("flat", "src/example/model.py", Layer.CORE),
-        ("flat", "src/example/ports.py", Layer.PORT),
-        ("flat", "src/example/core/pricing.py", Layer.CORE),
-        ("flat", "src/example/model/order.py", Layer.CORE),
-        ("flat", "src/example/ports/clock.py", Layer.PORT),
-        ("flat", "src/example/cli/commands.py", Layer.BOUNDARY),
-        ("flat", "src/example/adapters/core/http.py", Layer.ADAPTER),
-        ("flat", "src/example/adapters/http.py", Layer.ADAPTER),
-        ("flat", "src/example/cli.py", Layer.BOUNDARY),
-        ("flat", "examples/usage.py", Layer.BOUNDARY),
-        ("boundary", "src/example/schemas.py", Layer.BOUNDARY),
-        ("test-support", "src/example/fakes.py", Layer.TEST),
+        ("hexagonal", "src/example/rules.py", "core"),
+        ("hexagonal", "src/example/domain/orders/ports.py", "port"),
+        ("hexagonal", "src/example/application/orders.py", "shell"),
+        ("hexagonal", "src/example/application/orders_errors.py", "core"),
+        ("hexagonal", "src/example/adapters/sql/database.py", "transaction"),
+        ("hexagonal", "src/example/web/routes.py", "boundary"),
+        ("hexagonal", "src/example/development.py", "boundary"),
+        ("flat", "src/example/anything/at/all.py", "shell"),
+        ("flat", "src/example/model.py", "core"),
+        ("flat", "src/example/ports.py", "port"),
+        ("flat", "src/example/core/pricing.py", "core"),
+        ("flat", "src/example/model/order.py", "core"),
+        ("flat", "src/example/ports/clock.py", "port"),
+        ("flat", "src/example/cli/commands.py", "boundary"),
+        ("flat", "src/example/adapters/core/http.py", "adapter"),
+        ("flat", "src/example/adapters/http.py", "adapter"),
+        ("flat", "src/example/cli.py", "boundary"),
+        ("flat", "examples/usage.py", "boundary"),
+        ("boundary", "src/example/schemas.py", "boundary"),
+        ("test-support", "src/example/fakes.py", "test"),
     ],
 )
-def test_built_in_layouts(project: Project, layout: str, path: str, layer: Layer) -> None:
+def test_built_in_layouts(project: Project, layout: str, path: str, layer: str) -> None:
     project.manifest(f'[workspace]\nlayout = "{layout}"\n')
-    assert layer_of(project, path) is layer
+    assert layer_of(project, path) == layer
 
 
 def test_packages_select_kind_and_layout(project: Project) -> None:
@@ -131,30 +122,29 @@ def test_packages_select_kind_and_layout(project: Project) -> None:
         layout = "flat"
         """
     )
-    workspace = project.load()
-    kinds = {
-        package.root.relative_to(project.root).as_posix(): (package.kind, package.layout)
-        for package in workspace.packages
-    }
-    assert kinds == {
-        ".": (Kind.SERVER, "domains"),
-        "packages/sdk": (Kind.CLIENT, "boundary"),
-        "packages/tools": (Kind.LIBRARY, "flat"),
-    }
+    project.write(
+        {
+            "src/example/domains/orders/core.py": "VALUE = 1\n",
+            "packages/sdk/src/sdk/client.py": "from example.domains.orders.core import VALUE\n",
+            "packages/tools/src/tools/helper.py": "VALUE = 1\n",
+        }
+    )
+    sdk = project.classify("packages/sdk/src/sdk/client.py")
+    tools = project.classify("packages/tools/src/tools/helper.py")
+    assert sdk is not None and sdk.layer == "boundary"
+    assert tools is not None and tools.layer == "shell"
+    assert project.codes("packages/sdk/src/sdk/client.py") == ["LIT103"]
 
 
 def test_nested_packages_own_their_files(project: Project) -> None:
     project.package("packages/support", "support").write(
-        {"packages/support/src/support/domains/orders/core.py": ""}
+        {"packages/support/src/support/domains/orders/core.py": "VALUE = 1\n"}
     )
-    workspace = project.load()
-    core = project.root / "packages/support/src/support/domains/orders/core.py"
-    package = workspace.package_for(core)
+    classification = project.classify("packages/support/src/support/domains/orders/core.py")
 
-    assert package is not None and package.root == project.root / "packages/support"
-    assert workspace.module_name(core) == "support.domains.orders.core"
-    assert workspace.index.modules["support.domains.orders.core"].path == core
-    assert workspace.classify(core.relative_to(project.root)) == workspace.classify(core)
+    assert classification is not None
+    assert classification.layer == "core"
+    assert classification.glob == "src/*/domains/**/core.py"
 
 
 def test_custom_layout_extends_a_built_in(project: Project) -> None:
@@ -168,9 +158,9 @@ def test_custom_layout_extends_a_built_in(project: Project) -> None:
         layers = [{ glob = "src/*/clock.py", layer = "adapter" }]
         """
     )
-    assert layer_of(project, "src/example/clock.py") is Layer.ADAPTER
-    assert layer_of(project, "src/example/web/app.py") is Layer.BOUNDARY
-    assert layer_of(project, "tests/test_clock.py") is Layer.TEST
+    assert layer_of(project, "src/example/clock.py") == "adapter"
+    assert layer_of(project, "src/example/web/app.py") == "boundary"
+    assert layer_of(project, "tests/test_clock.py") == "test"
 
 
 def test_custom_layout_without_base_only_knows_its_globs(project: Project) -> None:
@@ -183,32 +173,17 @@ def test_custom_layout_without_base_only_knows_its_globs(project: Project) -> No
         layers = [{ glob = "src/*/decisions.py", layer = "core" }]
         """
     )
-    assert layer_of(project, "src/example/decisions.py") is Layer.CORE
+    assert layer_of(project, "src/example/decisions.py") == "core"
     assert layer_of(project, "src/example/domains/orders/core.py") is None
 
 
 def test_classification_records_the_matching_pattern(project: Project) -> None:
     project.write({"src/example/domains/orders/core.py": ""})
-    classification = project.load().classify(project.root / "src/example/domains/orders/core.py")
+    classification = project.classify("src/example/domains/orders/core.py")
 
     assert classification is not None
-    assert classification.origin is Origin.LAYOUT
+    assert classification.origin == "layout"
     assert classification.glob == "src/*/domains/**/core.py"
-
-
-def test_replacing_packages_reclassifies_sources(project: Project) -> None:
-    project.write({"src/example/domains/orders/core.py": ""})
-    original = project.load()
-    changed = replace(
-        original,
-        packages=(
-            replace(original.packages[0], layers=(LayerPattern("src/**/*.py", Layer.BOUNDARY),)),
-        ),
-    )
-    core = project.root / "src/example/domains/orders/core.py"
-    before, after = original.classify(core), changed.classify(core)
-    assert before is not None and before.layer is Layer.CORE
-    assert after is not None and after.layer is Layer.BOUNDARY
 
 
 OVERRIDE = """
@@ -226,10 +201,10 @@ def test_override_reclassifies_one_file(project: Project) -> None:
         + OVERRIDE.format(glob="src/example/orders.py", layer="shell")
     )
     project.write({"src/example/orders.py": ""})
-    classification = project.load().classify(project.root / "src/example/orders.py")
+    classification = project.classify("src/example/orders.py")
 
     assert classification is not None
-    assert (classification.layer, classification.origin) == (Layer.SHELL, Origin.OVERRIDE)
+    assert (classification.layer, classification.origin) == ("shell", "override")
     assert project.findings() == []
 
 
@@ -255,7 +230,7 @@ def test_stale_and_overlapping_overrides_are_findings(project: Project) -> None:
     project.write({"src/example/orders.py": ""})
     messages = [item.message for item in project.findings() if item.code == "LIT003"]
 
-    assert project.load().classify(project.root / "src/example/orders.py") is None
+    assert project.classify("src/example/orders.py") is None
     assert any("overlapping layout overrides for src/example/orders.py" in m for m in messages)
     assert any("stale layout override in .: src/example/missing.py" in m for m in messages)
     assert project.codes("src/example/orders.py") == ["LIT002"]
@@ -334,10 +309,15 @@ def test_virtual_environments_are_skipped_whatever_their_name(project: Project) 
             f"{site}/pyproject.toml": "[project]\nname = 'dep'\n",
         }
     )
-    workspace = project.load()
+    payload = project.load()
 
-    assert [package.root for package in workspace.packages] == [project.root]
-    assert [source.path for source in workspace.sources] == [project.root / "src/example/core.py"]
+    assert payload["summary"] == {
+        "findings": 1,
+        "packages": 1,
+        "files": 1,
+        "baselined": 0,
+        "ignored": 0,
+    }
 
 
 def test_workspace_without_projects_is_a_manifest_error(tmp_path) -> None:
@@ -361,15 +341,23 @@ def test_policy_sections_replace_built_in_entries(project: Project) -> None:
         outcome_suffixes = ["Missing"]
         """
     )
-    policy = project.load().policy
-
-    assert Layer.SHELL not in policy.layer_dependencies
-    assert policy.layer_dependencies[Layer.CORE] == {Layer.CORE}
-    assert policy.layer_dependencies[Layer.ADAPTER] == {Layer.CORE, Layer.PORT, Layer.ADAPTER}
-    assert policy.forbidden_imports[Layer.ROUTER] == frozenset()
-    assert policy.forbidden_imports[Layer.SHELL] == {"boto3"}
-    assert "httpx" in policy.forbidden_imports[Layer.CORE]
-    assert (policy.predicate_prefixes, policy.outcome_suffixes) == (("is_",), ("Missing",))
+    project.write({"src/example/domains/orders/persistence/repository.py": "VALUE = 1\n"})
+    assert (
+        project.lint(
+            "src/example/domains/orders/service.py",
+            "from example.domains.orders.persistence.repository import VALUE\n",
+        )
+        == []
+    )
+    assert project.lint("src/example/app/routers/orders.py", "import sqlalchemy\n") == []
+    assert project.lint("src/example/domains/orders/service.py", "import boto3\n") == ["LIT102"]
+    assert project.lint("src/example/domains/orders/core.py", "import httpx\n") == ["LIT102"]
+    assert project.lint(
+        "src/example/domains/orders/core.py", "def has_flag() -> bool:\n    return True\n"
+    ) == ["LIT401"]
+    assert project.lint(
+        "src/example/domains/orders/core.py", "def f() -> None:\n    raise OrderMissing()\n"
+    ) == ["LIT402"]
 
 
 def test_extend_forbidden_imports_adds_to_every_named_layer(project: Project) -> None:
@@ -383,17 +371,9 @@ def test_extend_forbidden_imports_adds_to_every_named_layer(project: Project) ->
         shell = ["redis"]
         """
     )
-    forbidden = project.load().policy.forbidden_imports
-
-    assert forbidden[Layer.SHELL] == {"boto3", "legacy", "redis"}
-    assert forbidden[Layer.CORE] == FORBIDDEN_IMPORTS[Layer.CORE] | {"legacy"}
-    assert all("legacy" in forbidden[layer] for layer in Layer)
-
-
-def test_snapshot_is_independent_of_later_edits(project: Project) -> None:
-    project.write({"src/example/domains/orders/core.py": "import httpx\n"})
-    snapshot = project.load()
-    (project.root / "src/example/domains/orders/core.py").write_text("")
-    (project.root / "pyproject.toml").unlink()
-
-    assert [item.code for item in engine.check(snapshot, ALL_RULES)] == ["LIT102"]
+    assert project.lint("src/example/domains/orders/service.py", "import boto3\n") == ["LIT102"]
+    assert project.lint("src/example/domains/orders/service.py", "import legacy\n") == ["LIT102"]
+    assert project.lint("src/example/domains/orders/service.py", "import redis\n") == ["LIT102"]
+    assert project.lint("src/example/domains/orders/core.py", "import httpx\n") == ["LIT102"]
+    assert project.lint("src/example/domains/orders/core.py", "import legacy\n") == ["LIT102"]
+    assert project.lint("src/example/app/routers/orders.py", "import legacy\n") == ["LIT102"]

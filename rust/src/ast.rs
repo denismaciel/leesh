@@ -4,9 +4,16 @@ use ruff_text_size::{Ranged, TextRange, TextSize};
 use std::cell::Cell;
 use std::collections::VecDeque;
 macro_rules! node_fields {
-    ({ $($key:literal : $value:expr),* $(,)? }) => {
-        vec![$(($key, Node::from($value))),*]
-    };
+    ({ $($key:literal : $value:expr),* $(,)? }) => {{
+        let mut _fields = Vec::new();
+        $(
+            let _v = Node::from($value);
+            if !(_v.is_null() || matches!(&_v, Node::List(l) if l.is_empty())) {
+                _fields.push(($key, _v));
+            }
+        )*
+        _fields
+    }};
 }
 type Fields = Vec<(&'static str, Node)>;
 /// A CPython-shaped syntax tree value. Every workspace tree stays in memory
@@ -245,32 +252,97 @@ pub fn id(n: &Node) -> usize {
         _ => 0,
     }
 }
-pub fn children(n: &Node) -> Vec<&Node> {
-    let mut result = Vec::new();
-    for value in n.values() {
-        if value.is_node() {
-            result.push(value);
-        } else if let Node::List(values) = value {
-            result.extend(values.iter().filter(|v| v.is_node()));
+#[inline]
+pub fn for_each_child<'a>(n: &'a Node, mut f: impl FnMut(&'a Node)) {
+    if let Node::Obj(o) = n {
+        for (_, value) in &o.fields {
+            match value {
+                Node::Obj(_) | Node::Tag(..) => f(value),
+                Node::List(values) => {
+                    for v in values {
+                        if v.is_node() {
+                            f(v);
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     }
+}
+pub fn children(n: &Node) -> Vec<&Node> {
+    let mut result = Vec::new();
+    for_each_child(n, |c| result.push(c));
     result
 }
 pub fn walk(n: &Node) -> Vec<&Node> {
-    let mut queue = VecDeque::from([n]);
-    let mut result = Vec::new();
-    while let Some(n) = queue.pop_front() {
-        result.push(n);
-        queue.extend(children(n));
+    let mut queue = VecDeque::with_capacity(64);
+    queue.push_back(n);
+    let mut result = Vec::with_capacity(64);
+    while let Some(node) = queue.pop_front() {
+        result.push(node);
+        for_each_child(node, |c| queue.push_back(c));
     }
     result
 }
-// CPython's names for Ruff's operator and expression-context variants.
-const TAGS: &[&str] = &[
-    "Load", "Store", "Del", "Invalid", "And", "Or", "Add", "Sub", "Mult", "MatMult", "Div", "Mod",
-    "Pow", "LShift", "RShift", "BitOr", "BitXor", "BitAnd", "FloorDiv", "Invert", "Not", "UAdd",
-    "USub", "Eq", "NotEq", "Lt", "LtE", "Gt", "GtE", "Is", "IsNot", "In", "NotIn",
-];
+#[inline]
+fn ctx_name(ctx: py::ExprContext) -> &'static str {
+    match ctx {
+        py::ExprContext::Load => "Load",
+        py::ExprContext::Store => "Store",
+        py::ExprContext::Del => "Del",
+        py::ExprContext::Invalid => "Invalid",
+    }
+}
+#[inline]
+fn boolop_name(op: py::BoolOp) -> &'static str {
+    match op {
+        py::BoolOp::And => "And",
+        py::BoolOp::Or => "Or",
+    }
+}
+#[inline]
+fn op_name(op: py::Operator) -> &'static str {
+    match op {
+        py::Operator::Add => "Add",
+        py::Operator::Sub => "Sub",
+        py::Operator::Mult => "Mult",
+        py::Operator::MatMult => "MatMult",
+        py::Operator::Div => "Div",
+        py::Operator::Mod => "Mod",
+        py::Operator::Pow => "Pow",
+        py::Operator::LShift => "LShift",
+        py::Operator::RShift => "RShift",
+        py::Operator::BitOr => "BitOr",
+        py::Operator::BitXor => "BitXor",
+        py::Operator::BitAnd => "BitAnd",
+        py::Operator::FloorDiv => "FloorDiv",
+    }
+}
+#[inline]
+fn unaryop_name(op: py::UnaryOp) -> &'static str {
+    match op {
+        py::UnaryOp::Invert => "Invert",
+        py::UnaryOp::Not => "Not",
+        py::UnaryOp::UAdd => "UAdd",
+        py::UnaryOp::USub => "USub",
+    }
+}
+#[inline]
+fn cmpop_name(op: py::CmpOp) -> &'static str {
+    match op {
+        py::CmpOp::Eq => "Eq",
+        py::CmpOp::NotEq => "NotEq",
+        py::CmpOp::Lt => "Lt",
+        py::CmpOp::LtE => "LtE",
+        py::CmpOp::Gt => "Gt",
+        py::CmpOp::GtE => "GtE",
+        py::CmpOp::Is => "Is",
+        py::CmpOp::IsNot => "IsNot",
+        py::CmpOp::In => "In",
+        py::CmpOp::NotIn => "NotIn",
+    }
+}
 pub fn parse(source: &str) -> Result<Node, ParseFailure> {
     let adapter = Adapter::new(source);
     let parser_span = crate::profile::span("ruff_parse");
@@ -309,7 +381,7 @@ pub fn parse(source: &str) -> Result<Node, ParseFailure> {
 }
 pub fn parse_expression(source: &str) -> Option<Node> {
     let parsed = ruff_python_parser::parse_expression(source).ok()?;
-    Some(Adapter::new(source).expr(&parsed.syntax().body))
+    Some(Adapter::new_no_lines(source).expr(&parsed.syntax().body))
 }
 // Normalize common CPython diagnostics. More specialized Ruff lexer diagnostics
 // intentionally retain their original detail rather than guessing CPython text.
@@ -360,14 +432,22 @@ impl<'a> Adapter<'a> {
             next: Cell::new(1),
         }
     }
+    fn new_no_lines(source: &'a str) -> Self {
+        Self {
+            source,
+            lines: Vec::new(),
+            next: Cell::new(1),
+        }
+    }
     fn position(&self, offset: usize) -> (usize, usize) {
+        if self.lines.is_empty() {
+            return (1, offset);
+        }
         let index = self.lines.partition_point(|p| *p <= offset) - 1;
         (index + 1, offset - self.lines[index])
     }
-    fn node(&self, name: &'static str, range: TextRange, mut fields: Fields) -> Node {
+    fn node(&self, name: &'static str, range: TextRange, fields: Fields) -> Node {
         let (line, col) = self.position(range.start().to_usize());
-        // Absent fields read as null or empty through `child`, `items` and indexing.
-        fields.retain(|(_, v)| !(v.is_null() || matches!(v, Node::List(l) if l.is_empty())));
         Node::Obj(Box::new(Obj {
             kind: name,
             id: self.next_id(),
@@ -382,12 +462,8 @@ impl<'a> Adapter<'a> {
         id as u32
     }
     // Markers keep a unique id because parent maps key every child by id.
-    fn tag(&self, value: impl std::fmt::Debug) -> Node {
-        let name = format!("{value:?}");
-        let kind = TAGS
-            .iter()
-            .find(|tag| **tag == name)
-            .unwrap_or_else(|| unreachable!("unknown operator or context {name}"));
+    #[inline]
+    fn tag_str(&self, kind: &'static str) -> Node {
         Node::Tag(kind, self.next_id())
     }
     fn opt(&self, e: Option<&py::Expr>) -> Node {
@@ -422,7 +498,11 @@ impl<'a> Adapter<'a> {
             .collect()
     }
     fn parameter(&self, p: &py::Parameter) -> Node {
-        self.node("arg",TextRange::new(p.name.range().start(),p.range.end()),node_fields!({"arg":p.name.as_str(),"annotation":self.opt(p.annotation.as_deref()),"type_comment":Node::Null}))
+        self.node(
+            "arg",
+            TextRange::new(p.name.range().start(), p.range.end()),
+            node_fields!({"arg":p.name.as_str(),"annotation":self.opt(p.annotation.as_deref())}),
+        )
     }
     fn parameters(&self, p: Option<&py::Parameters>) -> Node {
         let empty = py::Parameters::default();
@@ -444,7 +524,7 @@ impl<'a> Adapter<'a> {
                 } else {
                     "FunctionDef"
                 },
-                node_fields!({"name":n.name.as_str(),"args":self.parameters(Some(&n.parameters)),"body":self.stmts(&n.body),"decorator_list":n.decorator_list.iter().map(|d|self.expr(&d.expression)).collect::<Vec<_>>(),"returns":self.opt(n.returns.as_deref()),"type_comment":Node::Null,"type_params":self.types(n.type_params.as_deref())}),
+                node_fields!({"name":n.name.as_str(),"args":self.parameters(Some(&n.parameters)),"body":self.stmts(&n.body),"decorator_list":n.decorator_list.iter().map(|d|self.expr(&d.expression)).collect::<Vec<_>>(),"returns":self.opt(n.returns.as_deref()),"type_params":self.types(n.type_params.as_deref())}),
             ),
             py::Stmt::ClassDef(n) => (
                 "ClassDef",
@@ -461,11 +541,11 @@ impl<'a> Adapter<'a> {
             ),
             py::Stmt::Assign(n) => (
                 "Assign",
-                node_fields!({"targets":self.exprs(&n.targets),"value":self.expr(&n.value),"type_comment":Node::Null}),
+                node_fields!({"targets":self.exprs(&n.targets),"value":self.expr(&n.value)}),
             ),
             py::Stmt::AugAssign(n) => (
                 "AugAssign",
-                node_fields!({"target":self.expr(&n.target),"op":self.tag(n.op),"value":self.expr(&n.value)}),
+                node_fields!({"target":self.expr(&n.target),"op":self.tag_str(op_name(n.op)),"value":self.expr(&n.value)}),
             ),
             py::Stmt::AnnAssign(n) => (
                 "AnnAssign",
@@ -473,7 +553,7 @@ impl<'a> Adapter<'a> {
             ),
             py::Stmt::For(n) => (
                 if n.is_async { "AsyncFor" } else { "For" },
-                node_fields!({"target":self.expr(&n.target),"iter":self.expr(&n.iter),"body":self.stmts(&n.body),"orelse":self.stmts(&n.orelse),"type_comment":Node::Null}),
+                node_fields!({"target":self.expr(&n.target),"iter":self.expr(&n.iter),"body":self.stmts(&n.body),"orelse":self.stmts(&n.orelse)}),
             ),
             py::Stmt::While(n) => (
                 "While",
@@ -495,7 +575,7 @@ impl<'a> Adapter<'a> {
             }
             py::Stmt::With(n) => (
                 if n.is_async { "AsyncWith" } else { "With" },
-                node_fields!({"items":n.items.iter().map(|i|self.node("withitem",i.range,node_fields!({"context_expr":self.expr(&i.context_expr),"optional_vars":self.opt(i.optional_vars.as_deref())}))).collect::<Vec<_>>(),"body":self.stmts(&n.body),"type_comment":Node::Null}),
+                node_fields!({"items":n.items.iter().map(|i|self.node("withitem",i.range,node_fields!({"context_expr":self.expr(&i.context_expr),"optional_vars":self.opt(i.optional_vars.as_deref())}))).collect::<Vec<_>>(),"body":self.stmts(&n.body)}),
             ),
             py::Stmt::Match(n) => (
                 "Match",
@@ -610,7 +690,7 @@ impl<'a> Adapter<'a> {
         let (name, fields) = match e {
             py::Expr::BoolOp(n) => (
                 "BoolOp",
-                node_fields!({"op":self.tag(n.op),"values":self.exprs(&n.values)}),
+                node_fields!({"op":self.tag_str(boolop_name(n.op)),"values":self.exprs(&n.values)}),
             ),
             py::Expr::Named(n) => (
                 "NamedExpr",
@@ -618,11 +698,11 @@ impl<'a> Adapter<'a> {
             ),
             py::Expr::BinOp(n) => (
                 "BinOp",
-                node_fields!({"left":self.expr(&n.left),"op":self.tag(n.op),"right":self.expr(&n.right)}),
+                node_fields!({"left":self.expr(&n.left),"op":self.tag_str(op_name(n.op)),"right":self.expr(&n.right)}),
             ),
             py::Expr::UnaryOp(n) => (
                 "UnaryOp",
-                node_fields!({"op":self.tag(n.op),"operand":self.expr(&n.operand)}),
+                node_fields!({"op":self.tag_str(unaryop_name(n.op)),"operand":self.expr(&n.operand)}),
             ),
             py::Expr::Lambda(n) => (
                 "Lambda",
@@ -661,7 +741,7 @@ impl<'a> Adapter<'a> {
             py::Expr::YieldFrom(n) => ("YieldFrom", node_fields!({"value":self.expr(&n.value)})),
             py::Expr::Compare(n) => (
                 "Compare",
-                node_fields!({"left":self.expr(&n.operands[0]),"ops":n.ops.iter().map(|op|self.tag(op)).collect::<Vec<_>>(),"comparators":self.exprs(&n.operands[1..])}),
+                node_fields!({"left":self.expr(&n.operands[0]),"ops":n.ops.iter().map(|op|self.tag_str(cmpop_name(*op))).collect::<Vec<_>>(),"comparators":self.exprs(&n.operands[1..])}),
             ),
             py::Expr::Call(n) => (
                 "Call",
@@ -690,27 +770,27 @@ impl<'a> Adapter<'a> {
             py::Expr::EllipsisLiteral(_) => ("Constant", node_fields!({"value":Node::Ellipsis})),
             py::Expr::Attribute(n) => (
                 "Attribute",
-                node_fields!({"value":self.expr(&n.value),"attr":n.attr.as_str(),"ctx":self.tag(n.ctx)}),
+                node_fields!({"value":self.expr(&n.value),"attr":n.attr.as_str(),"ctx":self.tag_str(ctx_name(n.ctx))}),
             ),
             py::Expr::Subscript(n) => (
                 "Subscript",
-                node_fields!({"value":self.expr(&n.value),"slice":self.expr(&n.slice),"ctx":self.tag(n.ctx)}),
+                node_fields!({"value":self.expr(&n.value),"slice":self.expr(&n.slice),"ctx":self.tag_str(ctx_name(n.ctx))}),
             ),
             py::Expr::Starred(n) => (
                 "Starred",
-                node_fields!({"value":self.expr(&n.value),"ctx":self.tag(n.ctx)}),
+                node_fields!({"value":self.expr(&n.value),"ctx":self.tag_str(ctx_name(n.ctx))}),
             ),
             py::Expr::Name(n) => (
                 "Name",
-                node_fields!({"id":n.id.as_str(),"ctx":self.tag(n.ctx)}),
+                node_fields!({"id":n.id.as_str(),"ctx":self.tag_str(ctx_name(n.ctx))}),
             ),
             py::Expr::List(n) => (
                 "List",
-                node_fields!({"elts":self.exprs(&n.elts),"ctx":self.tag(n.ctx)}),
+                node_fields!({"elts":self.exprs(&n.elts),"ctx":self.tag_str(ctx_name(n.ctx))}),
             ),
             py::Expr::Tuple(n) => (
                 "Tuple",
-                node_fields!({"elts":self.exprs(&n.elts),"ctx":self.tag(n.ctx)}),
+                node_fields!({"elts":self.exprs(&n.elts),"ctx":self.tag_str(ctx_name(n.ctx))}),
             ),
             py::Expr::Slice(n) => (
                 "Slice",

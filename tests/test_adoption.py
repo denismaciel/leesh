@@ -3,21 +3,13 @@ from __future__ import annotations
 import json
 
 import pytest
-from conftest import Project
-
-from leesh import baseline
-from leesh.cli import main
-from leesh.loader import ManifestError
+from conftest import ManifestError, Project
 
 CORE = "src/example/domains/orders/core.py"
 SERVICE = "src/example/domains/orders/service.py"
 REPOSITORY = "src/example/domains/orders/persistence/repository.py"
 TEST = "tests/test_orders.py"
 BASELINE = '[workspace]\nbaseline = "leesh-baseline.json"\n'
-
-
-def run(project: Project, *args: str) -> int:
-    return main([*args, "--root", str(project.root)])
 
 
 def recorded(project: Project) -> dict[str, object]:
@@ -100,65 +92,69 @@ def test_invalid_ignores_name_the_problem(project: Project, manifest: str, messa
         project.load()
 
 
-def test_baseline_records_findings_without_lines(
-    project: Project, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_baseline_records_findings_without_lines(project: Project) -> None:
     project.manifest(BASELINE).write({CORE: "import httpx\nimport httpx as client\n"})
 
-    assert run(project, "baseline") == 0
+    result = project.run("baseline")
+    assert result.returncode == 0
     assert recorded(project) == {
         "version": 1,
         "findings": {
             CORE: [{"code": "LIT102", "message": "core modules cannot import httpx", "count": 2}]
         },
     }
-    assert capsys.readouterr().out == "wrote leesh-baseline.json: 2 findings in 1 files (was 0)\n"
+    assert result.stdout == "wrote leesh-baseline.json: 2 findings in 1 files (was 0)\n"
 
 
-def test_check_reports_only_findings_beyond_the_baseline(
-    project: Project, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_check_reports_only_findings_beyond_the_baseline(project: Project) -> None:
     project.manifest(BASELINE).write({CORE: "import httpx\n"})
-    run(project, "baseline")
+    project.run("baseline")
     project.write({CORE: "\n\nimport httpx\n", SERVICE: "import fastapi\n"})
-    capsys.readouterr()
 
-    assert run(project, "check") == 1
-    assert capsys.readouterr().out.splitlines() == [
+    checked = project.run("check")
+    assert checked.returncode == 1
+    assert checked.stdout.splitlines() == [
         f"{SERVICE}:1:1: LIT102 shell modules cannot import fastapi",
         "1 finding in 1 file (2 files in 1 package checked; 1 baselined)",
     ]
-    assert run(project, "check", "--no-baseline") == 1
-    assert "2 findings" in capsys.readouterr().out
+    unfiltered = project.run("check", "--no-baseline")
+    assert unfiltered.returncode == 1
+    assert "2 findings" in unfiltered.stdout
 
 
-def test_fixed_findings_make_the_baseline_stale_until_pruned(
-    project: Project, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_fixed_findings_make_the_baseline_stale_until_pruned(project: Project) -> None:
     project.manifest(BASELINE).write({CORE: "import httpx\n", SERVICE: "import fastapi\n"})
-    run(project, "baseline")
+    project.run("baseline")
     project.write({CORE: "", "src/example/domains/orders/model.py": "import redis\n"})
-    capsys.readouterr()
 
-    assert run(project, "check") == 1
-    assert capsys.readouterr().out.splitlines()[:2] == [
+    checked = project.run("check")
+    assert checked.returncode == 1
+    assert checked.stdout.splitlines()[:2] == [
         "leesh-baseline.json:1:1: LIT003 1 baseline entry no longer matches a finding; "
         "run `leesh baseline --prune` to shrink the baseline",
         "src/example/domains/orders/model.py:1:1: LIT102 core modules cannot import redis",
     ]
-    assert run(project, "baseline", "--prune") == 0
-    assert list(baseline.parse((project.root / "leesh-baseline.json").read_text()).counts) == [
-        (SERVICE, "LIT102", "shell modules cannot import fastapi")
-    ]
+    assert project.run("baseline", "--prune").returncode == 0
+    assert recorded(project) == {
+        "version": 1,
+        "findings": {
+            SERVICE: [
+                {
+                    "code": "LIT102",
+                    "message": "shell modules cannot import fastapi",
+                    "count": 1,
+                }
+            ]
+        },
+    }
 
 
-def test_baseline_needs_a_configured_path(
-    project: Project, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_baseline_needs_a_configured_path(project: Project) -> None:
     project.write({CORE: ""})
 
-    assert run(project, "baseline") == 2
-    assert "set workspace.baseline" in capsys.readouterr().err
+    result = project.run("baseline")
+    assert result.returncode == 2
+    assert "set workspace.baseline" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -176,9 +172,7 @@ def test_corrupt_baselines_are_manifest_errors(project: Project, text: str, mess
         project.load()
 
 
-def test_report_ranks_rules_edges_targets_and_areas(
-    project: Project, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_report_ranks_rules_edges_targets_and_areas(project: Project) -> None:
     project.manifest(BASELINE).write(
         {
             REPOSITORY: "VALUE = 1\n",
@@ -186,7 +180,7 @@ def test_report_ranks_rules_edges_targets_and_areas(
             CORE: "import httpx\n",
         }
     )
-    run(project, "baseline")
+    project.run("baseline")
     project.write(
         {
             "src/example/projections/summary/service.py": (
@@ -194,10 +188,10 @@ def test_report_ranks_rules_edges_targets_and_areas(
             )
         }
     )
-    capsys.readouterr()
 
-    assert run(project, "report", "--depth", "4", "--format", "json") == 0
-    stats = json.loads(capsys.readouterr().out)
+    result = project.run("report", "--depth", "4", "--format", "json")
+    assert result.returncode == 0
+    stats = json.loads(result.stdout)
 
     assert (stats["findings"], stats["new"], stats["baselined"]) == (3, 1, 2)
     assert stats["rules"][0] == {
@@ -215,19 +209,18 @@ def test_report_ranks_rules_edges_targets_and_areas(
     assert {"label": "src/example/domains/orders", "findings": 2} in stats["areas"]
 
 
-def test_report_text_lists_each_section(
-    project: Project, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_report_text_lists_each_section(project: Project) -> None:
     project.write({CORE: "import httpx\n"})
 
-    assert run(project, "report") == 0
-    output = capsys.readouterr().out
+    result = project.run("report")
+    assert result.returncode == 0
+    output = result.stdout
     assert output.startswith("1 finding: 1 new, 0 baselined (0 ignored)\n\nBy rule\n  LIT102")
     assert "Top targets\n       1  LIT102 httpx" in output
     assert "Top areas\n       1  src/example/domains" in output
 
 
-def test_report_can_focus_on_one_rule(project: Project, capsys: pytest.CaptureFixture[str]) -> None:
+def test_report_can_focus_on_one_rule(project: Project) -> None:
     project.write(
         {
             CORE: "import httpx\n",
@@ -236,21 +229,9 @@ def test_report_can_focus_on_one_rule(project: Project, capsys: pytest.CaptureFi
         }
     )
 
-    assert run(project, "report", "--rule", "restricted-subclassing", "--format", "json") == 0
-    stats = json.loads(capsys.readouterr().out)
+    result = project.run("report", "--rule", "restricted-subclassing", "--format", "json")
+    assert result.returncode == 0
+    stats = json.loads(result.stdout)
     assert [item["code"] for item in stats["rules"]] == ["LIT403"]
     assert stats["targets"] == [{"label": "LIT403 example.domains.orders.model.Mid", "findings": 1}]
-    assert run(project, "report", "--rule", "LIT999") == 2
-
-
-def test_rendered_baseline_round_trips_one_entry_per_line() -> None:
-    counts = {
-        ("src/b.py", "LIT102", 'core modules cannot import "x"'): 2,
-        ("src/a.py", "LIT101", "café"): 1,
-        ("src/a.py", "LIT201", "gone"): 0,
-    }
-    text = baseline.render(counts)
-
-    assert baseline.parse(text).counts == {key: count for key, count in counts.items() if count}
-    assert text.splitlines()[4] == '      {"code": "LIT101", "message": "café", "count": 1}'
-    assert baseline.parse(baseline.render({})).counts == {}
+    assert project.run("report", "--rule", "LIT999").returncode == 2

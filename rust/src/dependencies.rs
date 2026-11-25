@@ -1,270 +1,453 @@
 use crate::{
-    ast::{self, Node, items, kind, s},
-    model::{Finding, Source, finding},
-    symbols,
+    model::{Finding, ImportStmt, Source, finding_at},
     workspace::Workspace,
 };
 use std::collections::{BTreeSet, HashSet};
-fn edges<'a>(
-    nodes: impl IntoIterator<Item = &'a Node>,
-    package: Option<&str>,
-) -> Vec<(&'a Node, String, Option<String>)> {
-    let mut out = vec![];
-    for n in nodes {
-        if kind(n) == "Import" {
-            for a in items(n, "names") {
-                out.push((n, s(a, "name").into(), None));
-            }
-        } else if kind(n) == "ImportFrom"
-            && let Some(base) = symbols::absolute_module(n, package)
-        {
-            for a in items(n, "names") {
-                out.push((n, base.clone(), Some(s(a, "name").into())));
-            }
+
+fn for_each_edge<'a>(stmt: &'a ImportStmt, mut f: impl FnMut(&'a str, Option<&'a str>)) {
+    if !stmt.is_from {
+        for name in &stmt.names {
+            f(name, None);
+        }
+    } else if let Some(base) = stmt.resolved_module.as_deref() {
+        for name in &stmt.names {
+            f(base, Some(name));
         }
     }
-    out
 }
-fn targets<'a>(
+
+fn targets(
     module: &str,
     name: Option<&str>,
-    ws: &'a Workspace,
+    ws: &Workspace,
     seen: &mut HashSet<(String, Option<String>)>,
-) -> Vec<&'a Source> {
-    if !seen.insert((module.into(), name.map(str::to_owned))) {
-        return vec![];
+    out: &mut Vec<usize>,
+) {
+    if !seen.insert((module.to_owned(), name.map(str::to_owned))) {
+        return;
     }
-    if let Some(n) = name
-        && let Some(f) = ws.module_source(&format!("{module}.{n}"))
-    {
-        return vec![f];
+    if let Some(n) = name {
+        let mut qualified = String::with_capacity(module.len() + 1 + n.len());
+        qualified.push_str(module);
+        qualified.push('.');
+        qualified.push_str(n);
+        if let Some(idx) = ws.module_index(&qualified) {
+            out.push(idx);
+            return;
+        }
     }
-    let Some(f) = ws.module_source(module) else {
-        return vec![];
+    let Some(idx) = ws.module_index(module) else {
+        return;
     };
+    let f = &ws.sources[idx];
     if let Some(name) = name {
-        let mut exports = vec![];
-        for (n, m, sym) in ws.top_imports(f) {
-            if kind(n) == "ImportFrom"
-                && items(n, "names").iter().any(|a| {
-                    s(a, "name") == sym.as_deref().unwrap_or("")
-                        && (alias(a) == name || name == "*" || s(a, "name") == "*")
-                })
+        let before = out.len();
+        for imp in &f.top_imports {
+            if imp.is_from
+                && let Some(sym) = imp.member.as_deref()
+                && (&*imp.local == name || name == "*" || sym == "*")
             {
-                exports.extend(targets(m, sym.as_deref(), ws, seen));
+                targets(&imp.module, Some(sym), ws, seen, out);
             }
         }
-        if !exports.is_empty() {
-            return exports;
+        if out.len() > before {
+            return;
         }
     }
-    vec![f]
+    out.push(idx);
 }
-fn alias(n: &Node) -> &str {
-    if s(n, "asname").is_empty() {
-        s(n, "name")
-    } else {
-        s(n, "asname")
+
+fn push_ancestors(mod_name: &str, ws: &Workspace, out: &mut Vec<usize>, seen: &mut HashSet<usize>) {
+    for (dot, _) in mod_name.match_indices('.') {
+        let prefix = &mod_name[..dot];
+        if let Some(idx) = ws.module_index(prefix)
+            && ws.sources[idx].is_marker_file
+            && seen.insert(idx)
+        {
+            out.push(idx);
+        }
+    }
+    if let Some(idx) = ws.module_index(mod_name)
+        && seen.insert(idx)
+    {
+        out.push(idx);
     }
 }
-fn loaded<'a>(module: &str, name: Option<&str>, ws: &'a Workspace) -> Vec<&'a Source> {
-    let mut pending = vec![(module.to_string(), name.map(str::to_owned), false)];
-    let mut seen = HashSet::new();
-    let mut expanded = HashSet::new();
-    let mut emitted = HashSet::new();
-    let mut result = vec![];
-    while let Some((m, n, transitive)) = pending.pop() {
-        if !seen.insert((m.clone(), n.clone(), transitive)) {
+
+fn collect_direct_step(
+    module: &str,
+    name: Option<&str>,
+    ws: &Workspace,
+    target_seen: &mut HashSet<(String, Option<String>)>,
+    out: &mut Vec<usize>,
+    step_seen: &mut HashSet<usize>,
+) {
+    out.clear();
+    step_seen.clear();
+    target_seen.clear();
+    targets(module, name, ws, target_seen, out);
+    // Deduplicate targets in place while recording them in step_seen.
+    out.retain(|&idx| step_seen.insert(idx));
+    let target_count = out.len();
+    push_ancestors(module, ws, out, step_seen);
+    for i in 0..target_count {
+        let idx = out[i];
+        if let Some(tmod) = ws.sources[idx].module.as_deref() {
+            push_ancestors(tmod, ws, out, step_seen);
+        }
+    }
+}
+
+fn compute_init_closure(start_idx: usize, ws: &Workspace) -> Box<[usize]> {
+    let start = &ws.sources[start_idx];
+    if start.init_imports.is_empty() {
+        return Box::new([]);
+    }
+    let mut pending: Vec<(&str, Option<&str>)> = start
+        .init_imports
+        .iter()
+        .map(|(m, n)| (&**m, n.as_deref()))
+        .collect();
+    let mut seen_imports: HashSet<(&str, Option<&str>)> = HashSet::new();
+    let mut expanded: HashSet<usize> = HashSet::from([start_idx]);
+    let mut emitted: HashSet<usize> = HashSet::new();
+    let mut result: Vec<usize> = Vec::new();
+    let mut target_seen: HashSet<(String, Option<String>)> = HashSet::new();
+    let mut step: Vec<usize> = Vec::new();
+    let mut step_seen: HashSet<usize> = HashSet::new();
+
+    while let Some((m, n)) = pending.pop() {
+        if !seen_imports.insert((m, n)) {
             continue;
         }
-        let targets = targets(&m, n.as_deref(), ws, &mut HashSet::new());
-        let mut names = vec![m];
-        names.extend(targets.iter().filter_map(|f| f.module.clone()));
-        let mut loaded = targets;
-        for name in names {
-            let parts: Vec<_> = name.split('.').collect();
-            for len in 1..=parts.len() {
-                if let Some(f) = ws.module_source(&parts[..len].join("."))
-                    && (len == parts.len() || marker(f))
-                    && !loaded.iter().any(|x| x.path == f.path)
-                {
-                    loaded.push(f)
+        collect_direct_step(m, n, ws, &mut target_seen, &mut step, &mut step_seen);
+        for &idx in &step {
+            if emitted.insert(idx) {
+                result.push(idx);
+            }
+            if expanded.insert(idx) {
+                for (im, sym) in &ws.sources[idx].init_imports {
+                    pending.push((im, sym.as_deref()));
                 }
             }
         }
-        for f in loaded {
-            if emitted.insert(&f.path) {
-                result.push(f);
-            }
-            if !expanded.contains(&f.path) && (marker(f) || transitive) {
-                expanded.insert(&f.path);
-                pending.extend(
-                    ws.initialization_imports(f)
-                        .iter()
-                        .map(|(m, n)| (m.clone(), n.clone(), true)),
-                );
-            }
-        }
     }
-    result
+    result.into_boxed_slice()
 }
-fn marker(f: &Source) -> bool {
-    f.path.file_name().is_some_and(|s| s == "__init__.py")
-}
+
 fn reexported(
     module: &str,
     symbol: Option<&str>,
     ws: &Workspace,
     forbidden: &BTreeSet<String>,
     seen: &mut HashSet<(String, Option<String>)>,
-) -> BTreeSet<String> {
-    if !seen.insert((module.into(), symbol.map(str::to_owned))) {
-        return BTreeSet::new();
+    reached: &mut BTreeSet<String>,
+) {
+    if !seen.insert((module.to_owned(), symbol.map(str::to_owned))) {
+        return;
     }
     let root = module.split('.').next().unwrap_or("");
     if forbidden.contains(root) {
-        return BTreeSet::from([root.into()]);
+        reached.insert(root.to_owned());
+        return;
     }
     let (Some(f), Some(symbol)) = (ws.module_source(module), symbol) else {
-        return BTreeSet::new();
+        return;
     };
-    let mut reached = BTreeSet::new();
-    for (n, m, member) in ws.top_imports(f) {
-        let exported = items(n, "names").iter().any(|a| {
-            if kind(n) == "ImportFrom" {
-                s(a, "name") == member.as_deref().unwrap_or("")
-                    && (alias(a) == symbol || symbol == "*" || s(a, "name") == "*")
-            } else {
-                s(a, "name") == m.as_str()
-                    && (if s(a, "asname").is_empty() {
-                        s(a, "name").split('.').next().unwrap_or("")
-                    } else {
-                        s(a, "asname")
-                    }) == symbol
-            }
-        });
+    for imp in &f.top_imports {
+        let exported = if imp.is_from {
+            let orig = imp.member.as_deref().unwrap_or("");
+            &*imp.local == symbol || symbol == "*" || orig == "*"
+        } else {
+            &*imp.local == symbol
+        };
         if exported {
-            reached.extend(reexported(m, member.as_deref(), ws, forbidden, seen));
+            reexported(
+                &imp.module,
+                imp.member.as_deref(),
+                ws,
+                forbidden,
+                seen,
+                reached,
+            );
         }
     }
-    reached
 }
+
 fn domain(module: &str) -> Option<(&str, &str)> {
-    let p: Vec<_> = module.split('.').collect();
-    if p.len() > 2 && p[1] == "domains" {
-        Some((p[0], p[2]))
+    let mut p = module.split('.');
+    let root = p.next()?;
+    let second = p.next()?;
+    let dom = p.next()?;
+    if second == "domains" {
+        Some((root, dom))
     } else {
         None
     }
 }
-pub fn check(file: &Source, ws: &Workspace) -> Vec<Finding> {
-    let _span = crate::profile::span("dependencies");
-    let mut out = vec![];
-    if file.classification.is_none() {
-        let mut message = "file matches no layer in its package layout".to_string();
-        if let Some(i) = ws.owner(&file.path) {
-            message += &format!(
-                " ({}); move it, extend the layout, or add an override",
-                ws.packages[i].layout
-            );
+
+#[inline]
+fn resolve_direct_target(imported: &str, symbol: Option<&str>, ws: &Workspace) -> Option<usize> {
+    if let Some(sym) = symbol {
+        let mut qualified = String::with_capacity(imported.len() + 1 + sym.len());
+        qualified.push_str(imported);
+        qualified.push('.');
+        qualified.push_str(sym);
+        if let Some(idx) = ws.module_index(&qualified) {
+            return Some(idx);
         }
-        out.push(finding(file, &file.tree, "LIT002", message, None));
     }
-    let nodes = ast::walk(&file.tree);
-    let imports = edges(nodes.iter().copied(), file.package.as_deref());
+    ws.module_index(imported)
+}
+
+fn compute_sccs(ws: &Workspace) -> Vec<Option<u32>> {
+    let n = ws.sources.len();
+    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut active_nodes: Vec<usize> = Vec::new();
+
+    for (idx, source) in ws.sources.iter().enumerate() {
+        let Some(src_mod) = source.module.as_deref() else {
+            continue;
+        };
+        if ws.module_index(src_mod) != Some(idx) {
+            continue;
+        }
+        active_nodes.push(idx);
+        let mut neighbors = Vec::new();
+        for stmt in &source.all_imports {
+            for_each_edge(stmt, |imported, sym| {
+                if let Some(dest_idx) = resolve_direct_target(imported, sym, ws)
+                    && dest_idx != idx
+                    && !ws.dependency_overridden(source, &ws.sources[dest_idx])
+                {
+                    neighbors.push(dest_idx);
+                }
+            });
+        }
+        neighbors.sort_unstable();
+        neighbors.dedup();
+        adjacency[idx] = neighbors;
+    }
+
+    const UNVISITED: u32 = u32::MAX;
+    let mut index_counter = 0u32;
+    let mut indices = vec![UNVISITED; n];
+    let mut lowlink = vec![0u32; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut components: Vec<Option<u32>> = vec![None; n];
+    let mut component_id = 0u32;
+    let mut call_stack: Vec<(usize, usize)> = Vec::new();
+
+    for root in active_nodes {
+        if indices[root] != UNVISITED {
+            continue;
+        }
+        indices[root] = index_counter;
+        lowlink[root] = index_counter;
+        index_counter += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        call_stack.push((root, 0));
+
+        while let Some((node, pos)) = call_stack.last_mut() {
+            let node = *node;
+            if *pos < adjacency[node].len() {
+                let nxt = adjacency[node][*pos];
+                *pos += 1;
+                if indices[nxt] == UNVISITED {
+                    indices[nxt] = index_counter;
+                    lowlink[nxt] = index_counter;
+                    index_counter += 1;
+                    stack.push(nxt);
+                    on_stack[nxt] = true;
+                    call_stack.push((nxt, 0));
+                } else if on_stack[nxt] && indices[nxt] < lowlink[node] {
+                    lowlink[node] = indices[nxt];
+                }
+            } else {
+                call_stack.pop();
+                let finished_low = lowlink[node];
+                if let Some(&(parent, _)) = call_stack.last()
+                    && finished_low < lowlink[parent]
+                {
+                    lowlink[parent] = finished_low;
+                }
+                if finished_low == indices[node] {
+                    let start = stack.iter().rposition(|&m| m == node).unwrap();
+                    let scc_len = stack.len() - start;
+                    if scc_len >= 2 {
+                        for &member in &stack[start..] {
+                            on_stack[member] = false;
+                            components[member] = Some(component_id);
+                        }
+                        component_id += 1;
+                    } else {
+                        on_stack[node] = false;
+                    }
+                    stack.truncate(start);
+                }
+            }
+        }
+    }
+    components
+}
+
+pub fn precompute_sccs(ws: &Workspace) {
+    ws.cyclic_components(|| compute_sccs(ws));
+}
+
+pub fn check(source_idx: usize, file: &Source, ws: &Workspace) -> Vec<Finding> {
+    let _span = crate::profile::span("dependencies");
+    let mut out = Vec::new();
+    if file.classification.is_none() {
+        let message = format!(
+            "file matches no layer in its package layout ({}); move it, extend the layout, or add an override",
+            ws.packages[file.owner].layout
+        );
+        out.push(finding_at(&file.filename, 1, 0, "LIT002", message, None));
+    }
+    if file.all_imports.is_empty() {
+        return out;
+    }
+
     let layer = file.layer_name();
     let allowed = ws.policy.layer_dependencies.get(layer);
     let check_layer = !layer.is_empty()
         && file.package.is_some()
         && !(allowed.is_none() && file.layer() == "test");
     let owner = file.module.as_deref().and_then(domain);
-    let mut seen_layer = HashSet::new();
-    let mut seen_domain = HashSet::new();
-    for (node, m, n) in &imports {
-        if check_layer || owner.is_some() {
-            for target in ws.loaded_sources(m, n.as_deref(), || loaded(m, n.as_deref(), ws)) {
-                let module = target.module.as_deref().unwrap_or("");
-                let overridden = ws.dependency_overridden(file, target);
-                if check_layer && let Some(c) = &target.classification {
-                    let permitted =
-                        allowed.map_or(c.layer != "test", |a| ws.policy.is_a(&c.name, a));
-                    if target.path != file.path
-                        && !seen_layer.contains(&target.path)
-                        && !permitted
-                        && c.layer != "marker"
-                        && !ws.policy.allows_dependency(layer, module)
-                        && !overridden
-                    {
-                        seen_layer.insert(&target.path);
-                        out.push(finding(
-                            file,
-                            node,
-                            "LIT101",
-                            format!("{layer} cannot import {} module {module}", c.name),
-                            Some(module.into()),
-                        ));
-                    }
-                }
-                if let (Some(owner), Some(to)) = (owner, domain(module)) {
-                    if to.0 != owner.0
-                        || to == owner
-                        || seen_domain.contains(&target.path)
-                        || target.layer() == "marker"
-                        || overridden
-                    {
-                        continue;
-                    }
-                    let declared = ws
-                        .policy
-                        .domain_dependencies
-                        .get(owner.1)
-                        .is_some_and(|d| d.contains(to.1));
-                    let message = if !declared {
-                        Some(format!(
-                            "{} domain cannot import {module}: {} is not in domains.{}",
-                            owner.1, to.1, owner.1
-                        ))
-                    } else if !["core", "shell"].contains(&target.layer()) {
-                        Some(format!(
-                            "{} domain cannot import {module}: only the core and shell modules of {} are public",
-                            owner.1, to.1
-                        ))
-                    } else {
-                        None
-                    };
-                    if let Some(message) = message {
-                        seen_domain.insert(&target.path);
-                        out.push(finding(file, node, "LIT104", message, Some(module.into())));
-                    }
+    let check_unit_test = ws.strict && file.layer_name() == "test";
+
+    if check_layer || owner.is_some() || check_unit_test {
+        let mut checked_targets: HashSet<usize> = HashSet::new();
+        checked_targets.insert(source_idx);
+        let mut expanded_markers: HashSet<usize> = HashSet::new();
+        let mut target_seen: HashSet<(String, Option<String>)> = HashSet::new();
+        let mut step: Vec<usize> = Vec::new();
+        let mut step_seen: HashSet<usize> = HashSet::new();
+
+        let check_target = |target_idx: usize,
+                            stmt: &ImportStmt,
+                            checked_targets: &mut HashSet<usize>,
+                            out: &mut Vec<Finding>| {
+            if !checked_targets.insert(target_idx) {
+                return;
+            }
+            let target = &ws.sources[target_idx];
+            let module = target.module.as_deref().unwrap_or("");
+            if check_unit_test
+                && target.layer() == "adapter"
+                && !ws.policy.allows_dependency(layer, module)
+                && !ws.dependency_overridden(file, target)
+            {
+                out.push(finding_at(
+                    &file.filename,
+                    stmt.line as usize,
+                    stmt.column as usize,
+                    "LIT309",
+                    format!(
+                        "unit test imports adapter module {module}; pass fakes through ports instead"
+                    ),
+                    Some(module.into()),
+                ));
+            }
+            if check_layer
+                && let Some(c) = &target.classification
+                && c.layer != "marker"
+            {
+                let permitted = allowed.map_or(c.layer != "test", |a| ws.policy.is_a(&c.name, a));
+                if !permitted
+                    && !ws.policy.allows_dependency(layer, module)
+                    && !ws.dependency_overridden(file, target)
+                {
+                    out.push(finding_at(
+                        &file.filename,
+                        stmt.line as usize,
+                        stmt.column as usize,
+                        "LIT101",
+                        format!("{layer} cannot import {} module {module}", c.name),
+                        Some(module.into()),
+                    ));
                 }
             }
+            if let (Some(owner), Some(to)) = (owner, domain(module)) {
+                if to.0 != owner.0
+                    || to == owner
+                    || target.layer() == "marker"
+                    || ws.dependency_overridden(file, target)
+                {
+                    return;
+                }
+                let declared = ws
+                    .policy
+                    .domain_dependencies
+                    .get(owner.1)
+                    .is_some_and(|d| d.contains(to.1));
+                let message = if !declared {
+                    Some(format!(
+                        "{} domain cannot import {module}: {} is not in domains.{}",
+                        owner.1, to.1, owner.1
+                    ))
+                } else if !["core", "shell"].contains(&target.layer()) {
+                    Some(format!(
+                        "{} domain cannot import {module}: only the core and shell modules of {} are public",
+                        owner.1, to.1
+                    ))
+                } else {
+                    None
+                };
+                if let Some(message) = message {
+                    out.push(finding_at(
+                        &file.filename,
+                        stmt.line as usize,
+                        stmt.column as usize,
+                        "LIT104",
+                        message,
+                        Some(module.into()),
+                    ));
+                }
+            }
+        };
+
+        for stmt in &file.all_imports {
+            for_each_edge(stmt, |m, n| {
+                collect_direct_step(m, n, ws, &mut target_seen, &mut step, &mut step_seen);
+                for &target_idx in &step {
+                    check_target(target_idx, stmt, &mut checked_targets, &mut out);
+                    if ws.sources[target_idx].is_marker_file && expanded_markers.insert(target_idx)
+                    {
+                        let closure =
+                            ws.init_closure(target_idx, || compute_init_closure(target_idx, ws));
+                        for &reached_idx in closure {
+                            check_target(reached_idx, stmt, &mut checked_targets, &mut out);
+                        }
+                    }
+                }
+            });
         }
     }
+
     if let Some(forbidden) = ws
         .policy
         .forbidden_imports
         .get(layer)
         .filter(|f| !f.is_empty())
     {
-        for node in &nodes {
-            if !["Import", "ImportFrom"].contains(&kind(node)) {
-                continue;
-            }
-            let mut reached = BTreeSet::new();
-            for (_, m, n) in edges([*node], file.package.as_deref()) {
-                reached.extend(reexported(
-                    &m,
-                    n.as_deref(),
-                    ws,
-                    forbidden,
-                    &mut HashSet::new(),
-                ));
-            }
+        let mut seen = HashSet::new();
+        let mut reached = BTreeSet::new();
+        for stmt in &file.all_imports {
+            reached.clear();
+            for_each_edge(stmt, |m, n| {
+                seen.clear();
+                reexported(m, n, ws, forbidden, &mut seen, &mut reached);
+            });
             if !reached.is_empty() {
-                let target = reached.into_iter().collect::<Vec<_>>().join(", ");
-                out.push(finding(
-                    file,
-                    node,
+                let target = reached.iter().cloned().collect::<Vec<_>>().join(", ");
+                out.push(finding_at(
+                    &file.filename,
+                    stmt.line as usize,
+                    stmt.column as usize,
                     "LIT102",
                     format!("{layer} modules cannot import {target}"),
                     Some(target),
@@ -272,45 +455,71 @@ pub fn check(file: &Source, ws: &Workspace) -> Vec<Finding> {
             }
         }
     }
-    if ws
-        .owner(&file.path)
-        .is_some_and(|i| ws.packages[i].kind == "client")
-    {
-        let servers: BTreeSet<_> = ws
-            .sources
-            .iter()
-            .filter(|f| {
-                ws.owner(&f.path)
-                    .is_some_and(|i| ws.packages[i].kind == "server")
-                    && f.module
-                        .as_deref()
-                        .and_then(|m| ws.module_source(m))
-                        .is_some_and(|winner| winner.path == f.path)
-            })
-            .filter_map(|f| f.module.as_deref().and_then(|m| m.split('.').next()))
-            .collect();
-        for node in nodes {
-            let modules: Vec<&str> = match kind(node) {
-                "Import" => items(node, "names").iter().map(|a| s(a, "name")).collect(),
-                "ImportFrom" => {
-                    if !node["module"].is_null() {
-                        vec![s(node, "module")]
-                    } else {
-                        items(node, "names").iter().map(|a| s(a, "name")).collect()
-                    }
-                }
-                _ => vec![],
-            };
-            for m in modules {
+
+    if ws.packages[file.owner].kind == "client" {
+        let servers = ws.server_roots();
+        for stmt in &file.all_imports {
+            if stmt.is_from
+                && let Some(m) = stmt.raw_module.as_deref()
+            {
                 if servers.contains(m.split('.').next().unwrap_or("")) {
-                    out.push(finding(
-                        file,
-                        node,
+                    out.push(finding_at(
+                        &file.filename,
+                        stmt.line as usize,
+                        stmt.column as usize,
                         "LIT103",
                         format!("client packages cannot import server module {m}"),
                         Some(m.into()),
                     ));
                 }
+            } else {
+                for m in &stmt.names {
+                    if servers.contains(m.split('.').next().unwrap_or("")) {
+                        out.push(finding_at(
+                            &file.filename,
+                            stmt.line as usize,
+                            stmt.column as usize,
+                            "LIT103",
+                            format!("client packages cannot import server module {m}"),
+                            Some(m.to_string()),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(src_mod) = file.module.as_deref()
+        && !file.layer().is_empty()
+        && let Some(src_winner) = ws.module_index(src_mod)
+    {
+        let components = ws.cyclic_components(|| compute_sccs(ws));
+        if let Some(group) = components[src_winner] {
+            let mut seen_cycle: HashSet<usize> = HashSet::new();
+            for stmt in &file.all_imports {
+                for_each_edge(stmt, |m, n| {
+                    if let Some(dest_idx) = resolve_direct_target(m, n, ws)
+                        && dest_idx != src_winner
+                        && components[dest_idx] == Some(group)
+                        && !seen_cycle.contains(&dest_idx)
+                    {
+                        let dest = &ws.sources[dest_idx];
+                        if !ws.dependency_overridden(file, dest) {
+                            seen_cycle.insert(dest_idx);
+                            let target = dest.module.as_deref().unwrap_or("");
+                            out.push(finding_at(
+                                &file.filename,
+                                stmt.line as usize,
+                                stmt.column as usize,
+                                "LIT105",
+                                format!(
+                                    "import cycle: {src_mod} and {target} depend on each other"
+                                ),
+                                Some(target.to_owned()),
+                            ));
+                        }
+                    }
+                });
             }
         }
     }

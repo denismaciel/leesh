@@ -1,15 +1,44 @@
 use crate::{
     ast::{self, ParseFailure},
-    model::{Classification, Source},
-    symbols,
+    model::{Classification, FileContext, ImportStmt, InitImport, Source, TopImport},
+    rules, symbols,
 };
 use rayon::prelude::*;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, OnceLock, RwLock},
 };
+
+#[derive(Debug, Clone)]
+struct CompiledGlob {
+    prefix: Box<str>,
+    suffix: Box<str>,
+    regex: Arc<regex::Regex>,
+}
+impl CompiledGlob {
+    fn new(pattern: &str) -> Self {
+        let prefix_end = pattern.find(['*', '?', '[']).unwrap_or(pattern.len());
+        let suffix_start = pattern.rfind(['*', '?', ']']).map_or(0, |i| i + 1);
+        Self {
+            prefix: pattern[..prefix_end].into(),
+            suffix: pattern[suffix_start..].into(),
+            regex: compile_glob(pattern),
+        }
+    }
+    #[inline]
+    fn is_match(&self, path: &str) -> bool {
+        if !self.prefix.is_empty() && !path.starts_with(&*self.prefix) {
+            return false;
+        }
+        if !self.suffix.is_empty() && !path.ends_with(&*self.suffix) {
+            return false;
+        }
+        self.regex.is_match(path)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CustomLayer {
     pub name: String,
@@ -21,6 +50,7 @@ pub struct AllowedDependency {
     pub modules: Vec<String>,
     pub layers: BTreeSet<String>,
     pub reason: String,
+    pub review_by: Option<String>,
 }
 #[derive(Debug, Clone)]
 pub struct Policy {
@@ -60,6 +90,9 @@ pub struct Package {
     pub layers: Vec<(String, String)>,
     pub overrides: Vec<Value>,
     pub dependency_overrides: Vec<Value>,
+    compiled_layers: Vec<CompiledGlob>,
+    compiled_overrides: Vec<CompiledGlob>,
+    dep_override_pairs: HashSet<(String, String)>,
 }
 #[derive(Debug, Clone)]
 pub struct Ignore {
@@ -67,18 +100,17 @@ pub struct Ignore {
     pub paths: Vec<String>,
     pub layers: BTreeSet<String>,
     pub reason: String,
+    pub review_by: Option<String>,
+    pub max_count: Option<usize>,
 }
-type CachedImport = (ast::Node, String, Option<String>);
-#[derive(Default)]
-struct SourceImports {
-    top: OnceLock<Vec<CachedImport>>,
-    initialization: OnceLock<Vec<(String, Option<String>)>>,
-}
-type LoadKey = (String, Option<String>);
 pub struct Workspace {
-    loaded_cache: Mutex<HashMap<LoadKey, Vec<usize>>>,
-    import_cache: HashMap<PathBuf, SourceImports>,
+    init_closures: Box<[OnceLock<Box<[usize]>>]>,
+    scc_cache: OnceLock<Vec<Option<u32>>>,
+    server_roots_cache: OnceLock<HashSet<String>>,
     module_index: HashMap<String, usize>,
+    defined_packages: HashSet<String>,
+    packages_by_depth: Vec<usize>,
+    has_dependency_overrides: bool,
     pub root: PathBuf,
     pub manifest: Option<PathBuf>,
     pub packages: Vec<Package>,
@@ -90,6 +122,8 @@ pub struct Workspace {
     pub baseline: BTreeMap<(String, String, String), usize>,
     pub override_budget: usize,
     pub dependency_override_budget: usize,
+    pub strict: bool,
+    pub today: String,
 }
 pub fn matches_name<I, S>(name: &str, patterns: I) -> bool
 where
@@ -101,66 +135,66 @@ where
         name == p || (p.ends_with(".*") && name.starts_with(&p[..p.len() - 1]))
     })
 }
-pub fn matches_glob(path: &str, pattern: &str) -> bool {
-    static CACHE: OnceLock<Mutex<HashMap<String, Arc<regex::Regex>>>> = OnceLock::new();
+fn compile_glob(pattern: &str) -> Arc<regex::Regex> {
+    static CACHE: OnceLock<RwLock<HashMap<String, Arc<regex::Regex>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    let mut cache = cache.lock().unwrap();
-    let re = cache
-        .entry(pattern.into())
-        .or_insert_with(|| {
-            let parts: Vec<_> = pattern.split('/').collect();
-            let mut r = String::from("\\A");
-            for (i, p) in parts.iter().enumerate() {
-                let last = i + 1 == parts.len();
-                if *p == "**" {
-                    r.push_str(if last {
-                        "(?:[^/]+/)*[^/]+"
-                    } else {
-                        "(?:[^/]+/)*"
-                    });
-                    continue;
-                }
-                let chars: Vec<_> = p.chars().collect();
-                let mut j = 0;
-                while j < chars.len() {
-                    match chars[j] {
-                        '*' => r.push_str("[^/]*"),
-                        '?' => r.push_str("[^/]"),
-                        '[' => {
-                            if let Some(end) = (j + 2..chars.len()).find(|&k| chars[k] == ']') {
-                                r.push('[');
-                                let mut start = j + 1;
-                                if chars[start] == '!' {
-                                    r.push('^');
-                                    start += 1;
-                                }
-                                for c in &chars[start..end] {
-                                    if *c == '-' {
-                                        r.push('-')
-                                    } else {
-                                        r.push_str(&regex::escape(&c.to_string()))
-                                    }
-                                }
-                                r.push(']');
-                                j = end;
+    if let Some(re) = cache.read().unwrap().get(pattern) {
+        return Arc::clone(re);
+    }
+    let parts: Vec<_> = pattern.split('/').collect();
+    let mut r = String::from("\\A");
+    for (i, p) in parts.iter().enumerate() {
+        let last = i + 1 == parts.len();
+        if *p == "**" {
+            r.push_str(if last {
+                "(?:[^/]+/)*[^/]+"
+            } else {
+                "(?:[^/]+/)*"
+            });
+            continue;
+        }
+        let chars: Vec<_> = p.chars().collect();
+        let mut j = 0;
+        while j < chars.len() {
+            match chars[j] {
+                '*' => r.push_str("[^/]*"),
+                '?' => r.push_str("[^/]"),
+                '[' => {
+                    if let Some(end) = (j + 2..chars.len()).find(|&k| chars[k] == ']') {
+                        r.push('[');
+                        let mut start = j + 1;
+                        if chars[start] == '!' {
+                            r.push('^');
+                            start += 1;
+                        }
+                        for c in &chars[start..end] {
+                            if *c == '-' {
+                                r.push('-')
                             } else {
-                                r.push_str("\\[")
+                                r.push_str(&regex::escape(&c.to_string()))
                             }
                         }
-                        c => r.push_str(&regex::escape(&c.to_string())),
+                        r.push(']');
+                        j = end;
+                    } else {
+                        r.push_str("\\[")
                     }
-                    j += 1;
                 }
-                if !last {
-                    r.push('/')
-                }
+                c => r.push_str(&regex::escape(&c.to_string())),
             }
-            r.push_str("\\z");
-            Arc::new(regex::Regex::new(&r).unwrap_or_else(|_| regex::Regex::new("a^").unwrap()))
-        })
-        .clone();
-    drop(cache);
-    re.is_match(path)
+            j += 1;
+        }
+        if !last {
+            r.push('/')
+        }
+    }
+    r.push_str("\\z");
+    let re = Arc::new(regex::Regex::new(&r).unwrap_or_else(|_| regex::Regex::new("a^").unwrap()));
+    let mut guard = cache.write().unwrap();
+    Arc::clone(guard.entry(pattern.into()).or_insert(re))
+}
+pub fn matches_glob(path: &str, pattern: &str) -> bool {
+    compile_glob(pattern).is_match(path)
 }
 const LAYERS: &[&str] = &[
     "core",
@@ -299,14 +333,81 @@ fn integer(v: &Value, f: &str) -> Result<usize, String> {
             .ok_or_else(|| format!("{f} must be a non-negative integer"))
     }
 }
+fn opt_integer(v: &Value, f: &str) -> Result<Option<usize>, String> {
+    if v.is_null() {
+        Ok(None)
+    } else {
+        v.as_u64()
+            .map(|v| Some(v as usize))
+            .ok_or_else(|| format!("{f} must be a non-negative integer"))
+    }
+}
+fn iso_date(v: &Value, f: &str) -> Result<Option<String>, String> {
+    if v.is_null() {
+        return Ok(None);
+    }
+    let err = || format!("{f} must be an ISO date (YYYY-MM-DD)");
+    let s = v.as_str().ok_or_else(err)?;
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return Err(err());
+    }
+    let year: u32 = s[0..4].parse().map_err(|_| err())?;
+    let month: u32 = s[5..7].parse().map_err(|_| err())?;
+    let day: u32 = s[8..10].parse().map_err(|_| err())?;
+    if !(1..=9999).contains(&year) || !(1..=12).contains(&month) || day == 0 {
+        return Err(err());
+    }
+    let leap = (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400);
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+        _ => return Err(err()),
+    };
+    if day > max_day {
+        return Err(err());
+    }
+    Ok(Some(s.to_owned()))
+}
+fn today_utc() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = y + i64::from(m <= 2);
+    format!("{year:04}-{m:02}-{d:02}")
+}
 fn default<'a>(v: &'a Value, key: &str, d: &'a Value) -> &'a Value {
     v.get(key).unwrap_or(d)
 }
 fn policy(raw: &Value, w: &Value, d: &Value) -> Result<Policy, String> {
-    let mut custom = BTreeMap::new();
+    let mut custom = BTreeMap::from([(
+        "integration_test".into(),
+        CustomLayer {
+            name: "integration_test".into(),
+            base: "test".into(),
+            deterministic: false,
+        },
+    )]);
     for (n, v) in table(&raw["layers"], "layers")? {
         let f = format!("layers.{n}");
         if LAYERS.contains(&n.as_str())
+            || custom.contains_key(n.as_str())
             || n.replace(['_', '-'], "").is_empty()
             || !n
                 .chars()
@@ -409,7 +510,11 @@ fn policy(raw: &Value, w: &Value, d: &Value) -> Result<Policy, String> {
     }
     let mut allowed = vec![];
     for v in tables(&raw["allowed_dependencies"], "allowed_dependencies")? {
-        keys(v, &["modules", "layers", "reason"], "allowed_dependencies")?;
+        keys(
+            v,
+            &["modules", "layers", "reason", "review_by"],
+            "allowed_dependencies",
+        )?;
         let modules = qualified(&v["modules"], "allowed_dependencies.modules", true)?;
         if modules.is_empty() {
             return Err("allowed_dependencies.modules must name at least one module".into());
@@ -422,6 +527,7 @@ fn policy(raw: &Value, w: &Value, d: &Value) -> Result<Policy, String> {
             modules: modules.into_iter().collect(),
             layers,
             reason: string(&v["reason"], "allowed_dependencies.reason")?,
+            review_by: iso_date(&v["review_by"], "allowed_dependencies.review_by")?,
         });
     }
     let c = &raw["conventions"];
@@ -517,7 +623,7 @@ fn policy(raw: &Value, w: &Value, d: &Value) -> Result<Policy, String> {
         domain_dependencies: domains,
     })
 }
-const DEFAULTS: &str = r#"{"layer_dependencies": {"core": ["core", "port"], "port": ["core", "port"], "shell": ["core", "port", "shell"], "adapter": ["adapter", "core", "port"], "router": ["boundary", "router", "shell", "transaction"]}, "forbidden_imports": {"core": ["aiohttp", "aiosqlite", "asyncpg", "boto3", "botocore", "fastapi", "httpx", "playwright", "psycopg", "psycopg2", "pydantic", "pydantic_settings", "redis", "requests", "socket", "sqlalchemy", "sqlite3", "starlette", "subprocess"], "port": ["aiohttp", "aiosqlite", "asyncpg", "boto3", "botocore", "fastapi", "httpx", "playwright", "psycopg", "psycopg2", "pydantic", "pydantic_settings", "redis", "requests", "socket", "sqlalchemy", "sqlite3", "starlette", "subprocess"], "shell": ["fastapi", "pydantic", "pydantic_settings", "sqlalchemy", "starlette"], "router": ["sqlalchemy"]}, "predicate_prefixes": ["allows_", "can_", "contains_", "has_", "is_", "matches_", "should_"], "outcome_suffixes": ["AlreadyExists", "Conflict", "Denied", "Expired", "Forbidden", "NotFound", "Rejected", "Unauthorized", "Unavailable"], "allowed_bases": ["builtins.*", "enum.Enum", "enum.Flag", "enum.IntEnum", "enum.IntFlag", "enum.StrEnum", "pydantic.BaseModel", "pydantic.RootModel", "pydantic_settings.BaseSettings", "sqlalchemy.TypeDecorator", "sqlalchemy.ext.declarative.declarative_base", "sqlalchemy.orm.DeclarativeBase", "sqlalchemy.orm.DeclarativeBaseNoMeta", "sqlalchemy.orm.MappedAsDataclass", "sqlalchemy.orm.declarative_base", "sqlalchemy.types.TypeDecorator", "typing.Generic", "typing.NamedTuple", "typing.Protocol", "typing.TypedDict", "typing_extensions.Generic", "typing_extensions.NamedTuple", "typing_extensions.Protocol", "typing_extensions.TypedDict"], "layouts": {"domains": [["src/*/domains/**/boundary.py", "boundary"], ["src/*/domains/**/model.py", "core"], ["src/*/domains/**/core.py", "core"], ["src/*/domains/**/policy.py", "core"], ["src/*/domains/**/event.py", "core"], ["src/*/domains/**/ports.py", "port"], ["src/*/domains/**/service.py", "shell"], ["src/*/domains/*/**/boundary/**/*.py", "boundary"], ["src/*/domains/*/**/model/**/*.py", "core"], ["src/*/domains/*/**/core/**/*.py", "core"], ["src/*/domains/*/**/policy/**/*.py", "core"], ["src/*/domains/*/**/event/**/*.py", "core"], ["src/*/domains/*/**/ports/**/*.py", "port"], ["src/*/domains/*/**/service/**/*.py", "shell"], ["src/*/domains/**/persistence/**/*.py", "adapter"], ["src/*/projections/**/model.py", "core"], ["src/*/projections/**/ports.py", "port"], ["src/*/projections/**/service.py", "shell"], ["src/*/projections/*/**/model/**/*.py", "core"], ["src/*/projections/*/**/ports/**/*.py", "port"], ["src/*/projections/*/**/service/**/*.py", "shell"], ["src/*/projections/**/persistence/**/*.py", "adapter"], ["src/*/shared/model.py", "core"], ["src/*/shared/core.py", "core"], ["src/*/shared/policy.py", "core"], ["src/*/shared/ports.py", "port"], ["src/*/shared/model/**/*.py", "core"], ["src/*/shared/core/**/*.py", "core"], ["src/*/shared/policy/**/*.py", "core"], ["src/*/shared/ports/**/*.py", "port"], ["src/*/shared/persistence/**/*.py", "adapter"], ["src/*/__main__.py", "boundary"], ["src/*/app/**/*.py", "boundary"], ["src/*/app/**/router.py", "router"], ["src/*/app/**/*_router.py", "router"], ["src/*/app/router/**/*.py", "router"], ["src/*/app/routers/**/*.py", "router"], ["src/*/app/dependencies.py", "transaction"], ["src/*/db/**/*.py", "adapter"], ["src/*/db/unit_of_work.py", "transaction"], ["src/*/db/unit_of_work/**/*.py", "transaction"], ["src/*/integrations/**/*.py", "adapter"], ["src/*/integrations/unit_of_work/**/*.py", "transaction"], ["src/*/**/fakes.py", "test"], ["src/*/**/fake.py", "test"], ["src/*/**/fakes/**/*.py", "test"], ["conftest.py", "test"], ["tests/**/*.py", "test"], ["scripts/**/*.py", "boundary"], ["examples/**/*.py", "boundary"], ["migrations/**/*.py", "transaction"]], "hexagonal": [["src/*/*.py", "core"], ["src/*/domain/**/*.py", "core"], ["src/*/domain/**/ports.py", "port"], ["src/*/application/**/*.py", "shell"], ["src/*/application/**/ports.py", "port"], ["src/*/application/**/errors.py", "core"], ["src/*/application/**/*_errors.py", "core"], ["src/*/adapters/**/*.py", "adapter"], ["src/*/adapters/**/database.py", "transaction"], ["src/*/web/**/*.py", "boundary"], ["src/*/app/**/*.py", "boundary"], ["src/*/config.py", "boundary"], ["src/*/development.py", "boundary"], ["src/*/main.py", "boundary"], ["src/*/__main__.py", "boundary"], ["src/*/worker.py", "boundary"], ["conftest.py", "test"], ["tests/**/*.py", "test"], ["scripts/**/*.py", "boundary"], ["examples/**/*.py", "boundary"], ["migrations/**/*.py", "transaction"]], "flat": [["src/**/*.py", "shell"], ["src/*/model.py", "core"], ["src/*/core.py", "core"], ["src/*/policy.py", "core"], ["src/*/ports.py", "port"], ["src/*/model/**/*.py", "core"], ["src/*/core/**/*.py", "core"], ["src/*/policy/**/*.py", "core"], ["src/*/ports/**/*.py", "port"], ["src/*/adapters/**/*.py", "adapter"], ["src/*/cli.py", "boundary"], ["src/*/cli/**/*.py", "boundary"], ["src/*/__main__.py", "boundary"], ["src/*/development.py", "boundary"], ["conftest.py", "test"], ["tests/**/*.py", "test"], ["scripts/**/*.py", "boundary"], ["examples/**/*.py", "boundary"], ["migrations/**/*.py", "transaction"]], "boundary": [["src/**/*.py", "boundary"], ["conftest.py", "test"], ["tests/**/*.py", "test"], ["scripts/**/*.py", "boundary"], ["examples/**/*.py", "boundary"], ["migrations/**/*.py", "transaction"]], "test-support": [["src/**/*.py", "test"], ["conftest.py", "test"], ["tests/**/*.py", "test"], ["scripts/**/*.py", "boundary"], ["examples/**/*.py", "boundary"], ["migrations/**/*.py", "transaction"]]}}"#;
+const DEFAULTS: &str = r#"{"layer_dependencies": {"core": ["core"], "port": ["core", "port"], "shell": ["core", "port", "shell"], "adapter": ["adapter", "core", "port"], "router": ["boundary", "router", "shell", "transaction"]}, "forbidden_imports": {"core": ["aiohttp", "aiosqlite", "asyncpg", "boto3", "botocore", "fastapi", "httpx", "playwright", "psycopg", "psycopg2", "pydantic", "pydantic_settings", "redis", "requests", "socket", "sqlalchemy", "sqlite3", "starlette", "subprocess"], "port": ["aiohttp", "aiosqlite", "asyncpg", "boto3", "botocore", "fastapi", "httpx", "playwright", "psycopg", "psycopg2", "pydantic", "pydantic_settings", "redis", "requests", "socket", "sqlalchemy", "sqlite3", "starlette", "subprocess"], "shell": ["fastapi", "pydantic", "pydantic_settings", "sqlalchemy", "starlette"], "router": ["sqlalchemy"]}, "predicate_prefixes": ["allows_", "can_", "contains_", "has_", "is_", "matches_", "should_"], "outcome_suffixes": ["AlreadyExists", "Conflict", "Denied", "Expired", "Forbidden", "NotFound", "Rejected", "Unauthorized", "Unavailable"], "allowed_bases": ["builtins.*", "enum.Enum", "enum.Flag", "enum.IntEnum", "enum.IntFlag", "enum.StrEnum", "pydantic.BaseModel", "pydantic.RootModel", "pydantic_settings.BaseSettings", "sqlalchemy.TypeDecorator", "sqlalchemy.ext.declarative.declarative_base", "sqlalchemy.orm.DeclarativeBase", "sqlalchemy.orm.DeclarativeBaseNoMeta", "sqlalchemy.orm.MappedAsDataclass", "sqlalchemy.orm.declarative_base", "sqlalchemy.types.TypeDecorator", "typing.Generic", "typing.NamedTuple", "typing.Protocol", "typing.TypedDict", "typing_extensions.Generic", "typing_extensions.NamedTuple", "typing_extensions.Protocol", "typing_extensions.TypedDict"], "layouts": {"domains": [["src/*/domains/**/boundary.py", "boundary"], ["src/*/domains/**/model.py", "core"], ["src/*/domains/**/core.py", "core"], ["src/*/domains/**/policy.py", "core"], ["src/*/domains/**/event.py", "core"], ["src/*/domains/**/ports.py", "port"], ["src/*/domains/**/service.py", "shell"], ["src/*/domains/*/**/boundary/**/*.py", "boundary"], ["src/*/domains/*/**/model/**/*.py", "core"], ["src/*/domains/*/**/core/**/*.py", "core"], ["src/*/domains/*/**/policy/**/*.py", "core"], ["src/*/domains/*/**/event/**/*.py", "core"], ["src/*/domains/*/**/ports/**/*.py", "port"], ["src/*/domains/*/**/service/**/*.py", "shell"], ["src/*/domains/**/persistence/**/*.py", "adapter"], ["src/*/projections/**/model.py", "core"], ["src/*/projections/**/ports.py", "port"], ["src/*/projections/**/service.py", "shell"], ["src/*/projections/*/**/model/**/*.py", "core"], ["src/*/projections/*/**/ports/**/*.py", "port"], ["src/*/projections/*/**/service/**/*.py", "shell"], ["src/*/projections/**/persistence/**/*.py", "adapter"], ["src/*/shared/model.py", "core"], ["src/*/shared/core.py", "core"], ["src/*/shared/policy.py", "core"], ["src/*/shared/ports.py", "port"], ["src/*/shared/model/**/*.py", "core"], ["src/*/shared/core/**/*.py", "core"], ["src/*/shared/policy/**/*.py", "core"], ["src/*/shared/ports/**/*.py", "port"], ["src/*/shared/persistence/**/*.py", "adapter"], ["src/*/__main__.py", "boundary"], ["src/*/app/**/*.py", "boundary"], ["src/*/app/**/router.py", "router"], ["src/*/app/**/*_router.py", "router"], ["src/*/app/router/**/*.py", "router"], ["src/*/app/routers/**/*.py", "router"], ["src/*/app/dependencies.py", "transaction"], ["src/*/db/**/*.py", "adapter"], ["src/*/db/unit_of_work.py", "transaction"], ["src/*/db/unit_of_work/**/*.py", "transaction"], ["src/*/integrations/**/*.py", "adapter"], ["src/*/integrations/unit_of_work/**/*.py", "transaction"], ["src/*/**/fakes.py", "test"], ["src/*/**/fake.py", "test"], ["src/*/**/fakes/**/*.py", "test"]], "hexagonal": [["src/*/*.py", "core"], ["src/*/domain/**/*.py", "core"], ["src/*/domain/**/ports.py", "port"], ["src/*/application/**/*.py", "shell"], ["src/*/application/**/ports.py", "port"], ["src/*/application/**/errors.py", "core"], ["src/*/application/**/*_errors.py", "core"], ["src/*/adapters/**/*.py", "adapter"], ["src/*/adapters/**/database.py", "transaction"], ["src/*/web/**/*.py", "boundary"], ["src/*/app/**/*.py", "boundary"], ["src/*/config.py", "boundary"], ["src/*/development.py", "boundary"], ["src/*/main.py", "boundary"], ["src/*/__main__.py", "boundary"], ["src/*/worker.py", "boundary"]], "flat": [["src/**/*.py", "shell"], ["src/*/model.py", "core"], ["src/*/core.py", "core"], ["src/*/policy.py", "core"], ["src/*/ports.py", "port"], ["src/*/model/**/*.py", "core"], ["src/*/core/**/*.py", "core"], ["src/*/policy/**/*.py", "core"], ["src/*/ports/**/*.py", "port"], ["src/*/adapters/**/*.py", "adapter"], ["src/*/cli.py", "boundary"], ["src/*/cli/**/*.py", "boundary"], ["src/*/__main__.py", "boundary"], ["src/*/development.py", "boundary"]], "boundary": [["src/**/*.py", "boundary"]], "test-support": [["src/**/*.py", "test"]]}}"#;
 const IGNORED: &[&str] = &[
     ".direnv",
     ".git",
@@ -537,29 +643,126 @@ const IGNORED: &[&str] = &[
 fn is_virtualenv(e: &walkdir::DirEntry) -> bool {
     e.file_type().is_dir() && e.path().join("pyvenv.cfg").is_file()
 }
-fn cache_imports<'a>(
-    nodes: impl IntoIterator<Item = &'a ast::Node>,
-    package: Option<&str>,
-) -> Vec<CachedImport> {
-    let mut result = vec![];
-    for node in nodes {
-        if ast::kind(node) == "Import" {
-            for alias in ast::items(node, "names") {
-                result.push((node.clone(), ast::s(alias, "name").into(), None));
+fn extract_top_imports(tree: &ast::Node, package: Option<&str>) -> Box<[TopImport]> {
+    let mut result = Vec::new();
+    for node in ast::items(tree, "body") {
+        match ast::kind(node) {
+            "Import" => {
+                for alias in ast::items(node, "names") {
+                    let orig = ast::s(alias, "name");
+                    let asname = ast::s(alias, "asname");
+                    let local = if asname.is_empty() {
+                        orig.split('.').next().unwrap_or("")
+                    } else {
+                        asname
+                    };
+                    result.push(TopImport {
+                        is_from: false,
+                        module: orig.into(),
+                        member: None,
+                        local: local.into(),
+                    });
+                }
             }
-        } else if ast::kind(node) == "ImportFrom"
-            && let Some(module) = symbols::absolute_module(node, package)
-        {
-            for alias in ast::items(node, "names") {
-                result.push((
-                    node.clone(),
-                    module.clone(),
-                    Some(ast::s(alias, "name").into()),
-                ));
+            "ImportFrom" => {
+                if let Some(module) = symbols::absolute_module(node, package) {
+                    for alias in ast::items(node, "names") {
+                        let orig = ast::s(alias, "name");
+                        let asname = ast::s(alias, "asname");
+                        let local = if asname.is_empty() { orig } else { asname };
+                        result.push(TopImport {
+                            is_from: true,
+                            module: module.as_str().into(),
+                            member: Some(orig.into()),
+                            local: local.into(),
+                        });
+                    }
+                }
             }
+            _ => {}
         }
     }
-    result
+    result.into_boxed_slice()
+}
+fn extract_init_imports(tree: &ast::Node, package: Option<&str>) -> Box<[InitImport]> {
+    let mut pending: Vec<&ast::Node> = ast::items(tree, "body").iter().collect();
+    let mut result = Vec::new();
+    while let Some(node) = pending.pop() {
+        match ast::kind(node) {
+            "Import" => {
+                for alias in ast::items(node, "names") {
+                    result.push((ast::s(alias, "name").into(), None));
+                }
+            }
+            "ImportFrom" => {
+                if let Some(module) = symbols::absolute_module(node, package) {
+                    for alias in ast::items(node, "names") {
+                        result.push((module.as_str().into(), Some(ast::s(alias, "name").into())));
+                    }
+                }
+            }
+            "ClassDef" | "With" | "AsyncWith" => {
+                pending.extend(ast::items(node, "body"));
+            }
+            "If" | "For" | "AsyncFor" | "While" => {
+                pending.extend(ast::items(node, "body"));
+                pending.extend(ast::items(node, "orelse"));
+            }
+            "Try" | "TryStar" => {
+                pending.extend(ast::items(node, "body"));
+                for h in ast::items(node, "handlers") {
+                    pending.extend(ast::items(h, "body"));
+                }
+                pending.extend(ast::items(node, "orelse"));
+                pending.extend(ast::items(node, "finalbody"));
+            }
+            "Match" => {
+                for c in ast::items(node, "cases") {
+                    pending.extend(ast::items(c, "body"));
+                }
+            }
+            _ => {}
+        }
+    }
+    result.into_boxed_slice()
+}
+fn extract_all_imports(nodes: &[&ast::Node], package: Option<&str>) -> Box<[ImportStmt]> {
+    let mut result = Vec::new();
+    for &node in nodes {
+        let k = ast::kind(node);
+        if k == "Import" {
+            let (line, col) = node.position().unwrap_or((1, 0));
+            let names: Box<[Box<str>]> = ast::items(node, "names")
+                .iter()
+                .map(|a| ast::s(a, "name").into())
+                .collect();
+            result.push(ImportStmt {
+                line: line as u32,
+                column: col as u32,
+                is_from: false,
+                raw_module: None,
+                resolved_module: None,
+                names,
+            });
+        } else if k == "ImportFrom" {
+            let (line, col) = node.position().unwrap_or((1, 0));
+            let raw_module = (!node["module"].is_null()).then(|| ast::s(node, "module").into());
+            let resolved_module = symbols::absolute_module(node, package).map(Into::into);
+            let names: Box<[Box<str>]> = ast::items(node, "names")
+                .iter()
+                .map(|a| ast::s(a, "name").into())
+                .collect();
+            result.push(ImportStmt {
+                line: line as u32,
+                column: col as u32,
+                is_from: true,
+                raw_module,
+                resolved_module,
+                names,
+            });
+        }
+    }
+    result.into_boxed_slice()
 }
 fn toml_error(error: toml::de::Error, text: &str) -> String {
     if error.message().contains("unclosed table") && error.message().contains("expected `]`") {
@@ -595,132 +798,132 @@ fn relative(path: &Path, root: &Path) -> String {
     }
 }
 impl Workspace {
+    #[inline]
     pub fn owner(&self, path: &Path) -> Option<usize> {
-        self.packages
+        self.packages_by_depth
             .iter()
-            .enumerate()
-            .filter(|(_, p)| path.starts_with(&p.root))
-            .max_by_key(|(_, p)| p.root.components().count())
-            .map(|(i, _)| i)
+            .copied()
+            .find(|&i| path.starts_with(&self.packages[i].root))
     }
-    pub fn classify(&self, path: &Path) -> Option<Classification> {
-        let path = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.root.join(path)
-        };
-        let i = self.owner(&path)?;
-        let p = &self.packages[i];
-        let name = relative(&path, &p.root);
-        let ovs: Vec<_> = p
-            .overrides
-            .iter()
-            .filter(|o| matches_glob(&name, st(&o["glob"])))
-            .collect();
-        if ovs.len() > 1 {
-            return None;
+    fn classify_in(&self, path: &Path, owner: usize) -> Option<Classification> {
+        let p = &self.packages[owner];
+        let name = relative(path, &p.root);
+        let mut matched_override: Option<usize> = None;
+        for (idx, re) in p.compiled_overrides.iter().enumerate() {
+            if re.is_match(&name) {
+                if matched_override.is_some() {
+                    return None;
+                }
+                matched_override = Some(idx);
+            }
         }
-        let (glob, layer, origin) = if let Some(o) = ovs.first() {
+        let (glob, layer, origin) = if let Some(idx) = matched_override {
+            let o = &p.overrides[idx];
             (st(&o["glob"]), st(&o["layer"]), "override")
         } else {
-            let (g, l) = p
-                .layers
+            let (idx, _) = p
+                .compiled_layers
                 .iter()
+                .enumerate()
                 .rev()
-                .find(|(g, _)| matches_glob(&name, g))?;
+                .find(|(_, re)| re.is_match(&name))?;
+            let (g, l) = &p.layers[idx];
             (g.as_str(), l.as_str(), "layout")
         };
         Some(Classification {
-            package: i,
+            package: owner,
             layer: self.policy.base(layer).into(),
             name: layer.into(),
             origin: origin.into(),
             glob: glob.into(),
         })
     }
-    pub(crate) fn top_imports(&self, file: &Source) -> &[CachedImport] {
-        self.import_cache[&file.path].top.get_or_init(|| {
-            cache_imports(
-                ast::items(&file.tree, "body").iter(),
-                file.package.as_deref(),
-            )
-        })
+    pub fn classify(&self, path: &Path) -> Option<Classification> {
+        let owned;
+        let path = if path.is_absolute() {
+            path
+        } else {
+            owned = self.root.join(path);
+            &owned
+        };
+        let i = self.owner(path)?;
+        self.classify_in(path, i)
     }
-    pub(crate) fn initialization_imports(&self, file: &Source) -> &[(String, Option<String>)] {
-        self.import_cache[&file.path]
-            .initialization
-            .get_or_init(|| {
-                let mut pending: Vec<_> = ast::items(&file.tree, "body").iter().collect();
-                let mut imports = vec![];
-                while let Some(node) = pending.pop() {
-                    match ast::kind(node) {
-                        "FunctionDef" | "AsyncFunctionDef" | "Lambda" => continue,
-                        "Import" | "ImportFrom" => imports.push(node),
-                        _ => {
-                            pending.extend(ast::children(node));
-                        }
-                    }
-                }
-                cache_imports(imports, file.package.as_deref())
-                    .into_iter()
-                    .map(|(_, module, symbol)| (module, symbol))
-                    .collect()
-            })
+    pub(crate) fn init_closure(
+        &self,
+        source_idx: usize,
+        compute: impl FnOnce() -> Box<[usize]>,
+    ) -> &[usize] {
+        self.init_closures[source_idx].get_or_init(compute)
     }
-    // Cache only complete traversals: recursive partial results depend on the
-    // current cycle guards and cannot safely be shared across imports.
-    pub(crate) fn loaded_sources<'a>(
-        &'a self,
-        module: &str,
-        name: Option<&str>,
-        compute: impl FnOnce() -> Vec<&'a Source>,
-    ) -> Vec<&'a Source> {
-        let key = (module.to_owned(), name.map(str::to_owned));
-        if let Some(indices) = self.loaded_cache.lock().unwrap().get(&key) {
-            return indices.iter().map(|i| &self.sources[*i]).collect();
-        }
-        let sources = compute();
-        let indices = sources
-            .iter()
-            .map(|s| self.module_index[s.module.as_ref().unwrap()])
-            .collect();
-        self.loaded_cache.lock().unwrap().insert(key, indices);
-        sources
+    pub(crate) fn cyclic_components(
+        &self,
+        compute: impl FnOnce() -> Vec<Option<u32>>,
+    ) -> &[Option<u32>] {
+        self.scc_cache.get_or_init(compute)
     }
-    pub fn module_source(&self, module: &str) -> Option<&Source> {
-        self.module_index.get(module).map(|i| &self.sources[*i])
-    }
-    pub fn defines_package(&self, root: &str) -> bool {
-        self.module_index
-            .keys()
-            .any(|m| m == root || m.strip_prefix(root).is_some_and(|r| r.starts_with('.')))
-    }
-    pub fn dependency_overridden(&self, importer: &Source, imported: &Source) -> bool {
-        self.owner(&importer.path).is_some_and(|i| {
-            let p = &self.packages[i];
-            imported.path.starts_with(&p.root)
-                && p.dependency_overrides.iter().any(|o| {
-                    st(&o["importer"]) == relative(&importer.path, &p.root)
-                        && st(&o["imported"]) == relative(&imported.path, &p.root)
+    pub(crate) fn server_roots(&self) -> &HashSet<String> {
+        self.server_roots_cache.get_or_init(|| {
+            self.sources
+                .iter()
+                .enumerate()
+                .filter(|(idx, f)| {
+                    self.packages[f.owner].kind == "server"
+                        && f.module
+                            .as_deref()
+                            .and_then(|m| self.module_index(m))
+                            .is_some_and(|winner| winner == *idx)
                 })
+                .filter_map(|(_, f)| f.module.as_deref().and_then(|m| m.split('.').next()))
+                .map(str::to_owned)
+                .collect()
         })
+    }
+    #[inline]
+    pub fn module_index(&self, module: &str) -> Option<usize> {
+        self.module_index.get(module).copied()
+    }
+    #[inline]
+    pub fn module_source(&self, module: &str) -> Option<&Source> {
+        self.module_index.get(module).map(|&i| &self.sources[i])
+    }
+    #[inline]
+    pub fn defines_package(&self, root: &str) -> bool {
+        self.defined_packages.contains(root)
+    }
+    #[inline]
+    pub fn dependency_overridden(&self, importer: &Source, imported: &Source) -> bool {
+        if !self.has_dependency_overrides {
+            return false;
+        }
+        let p = &self.packages[importer.owner];
+        if p.dep_override_pairs.is_empty() || !imported.path.starts_with(&p.root) {
+            return false;
+        }
+        p.dep_override_pairs.contains(&(
+            relative(&importer.path, &p.root),
+            relative(&imported.path, &p.root),
+        ))
     }
     pub fn configuration_errors(&self) -> Vec<String> {
-        let files: Vec<_> = self
-            .sources
-            .iter()
-            .map(|s| &s.path)
-            .chain(self.parse_failures.iter().map(|(p, _)| p))
-            .collect();
         let mut errors = vec![];
         let mut overridden = BTreeSet::new();
+        // Bucket all files by owning package in a single O(F) pass.
+        let mut by_pkg: Vec<BTreeMap<String, &PathBuf>> =
+            (0..self.packages.len()).map(|_| BTreeMap::new()).collect();
+        for s in &self.sources {
+            let p = &self.packages[s.owner];
+            by_pkg[s.owner].insert(relative(&s.path, &p.root), &s.path);
+        }
+        for (path, _) in &self.parse_failures {
+            if let Some(owner) = self.owner(path) {
+                let p = &self.packages[owner];
+                by_pkg[owner].insert(relative(path, &p.root), path);
+            }
+        }
         for (i, p) in self.packages.iter().enumerate() {
             let location = relative(&p.root, &self.root);
-            let relative: BTreeMap<_, _> = files
-                .iter()
-                .filter(|f| self.owner(f) == Some(i))
-                .map(|f| (relative(f, &p.root), *f))
-                .collect();
+            let rel_map = &by_pkg[i];
             let mut pairs = BTreeSet::new();
             for o in &p.dependency_overrides {
                 let a = st(&o["importer"]);
@@ -731,37 +934,56 @@ impl Workspace {
                     ))
                 }
                 for (role, t) in [("importer", a), ("imported", b)] {
-                    if !relative.contains_key(t) {
+                    if !rel_map.contains_key(t) {
                         errors.push(format!(
                             "stale dependency override {role} in {location}: {t}"
                         ))
                     }
                 }
-            }
-            for o in &p.overrides {
-                let g = st(&o["glob"]);
-                let matches: Vec<_> = relative
-                    .iter()
-                    .filter(|(n, _)| matches_glob(n, g))
-                    .map(|(_, p)| *p)
-                    .collect();
-                if matches.is_empty() {
-                    errors.push(format!("stale layout override in {location}: {g}"))
-                }
-                overridden.extend(matches);
-            }
-            for name in relative.keys() {
-                let globs: Vec<_> = p
-                    .overrides
-                    .iter()
-                    .map(|o| st(&o["glob"]))
-                    .filter(|g| matches_glob(name, g))
-                    .collect();
-                if globs.len() > 1 {
+                if let Some(review_by) = o.get("review_by").and_then(Value::as_str)
+                    && review_by < self.today.as_str()
+                {
                     errors.push(format!(
-                        "overlapping layout overrides for {name}: {}",
-                        globs.join(", ")
-                    ))
+                        "dependency override review_by {review_by} has expired in {location}: {a} -> {b}"
+                    ));
+                }
+            }
+            if !p.overrides.is_empty() {
+                for (o, re) in p.overrides.iter().zip(&p.compiled_overrides) {
+                    let g = st(&o["glob"]);
+                    let matches: Vec<_> = rel_map
+                        .iter()
+                        .filter(|(n, _)| re.is_match(n))
+                        .map(|(_, path)| *path)
+                        .collect();
+                    if matches.is_empty() {
+                        errors.push(format!("stale layout override in {location}: {g}"))
+                    }
+                    if let Some(review_by) = o.get("review_by").and_then(Value::as_str)
+                        && review_by < self.today.as_str()
+                    {
+                        errors.push(format!(
+                            "layout override review_by {review_by} has expired in {location}: {g}"
+                        ));
+                    }
+                    overridden.extend(matches);
+                }
+                if p.overrides.len() > 1 {
+                    for name in rel_map.keys() {
+                        let globs: Vec<_> = p
+                            .overrides
+                            .iter()
+                            .zip(&p.compiled_overrides)
+                            .filter(|(_, re)| re.is_match(name))
+                            .map(|(o, _)| st(&o["glob"]))
+                            .collect();
+                        if globs.len() > 1 {
+                            errors.push(format!(
+                                "overlapping layout overrides for {name}: {}",
+                                globs.join(", ")
+                            ))
+                        }
+                    }
                 }
             }
         }
@@ -772,26 +994,40 @@ impl Workspace {
                 self.override_budget
             ))
         }
-        let modules: Vec<_> = self
-            .sources
-            .iter()
-            .filter_map(|s| s.module.as_deref())
-            .collect();
-        for a in &self.policy.allowed_dependencies {
-            for p in &a.modules {
-                if !modules.iter().any(|m| matches_name(m, [p])) {
+        if !self.policy.allowed_dependencies.is_empty()
+            || !self.policy.domain_dependencies.is_empty()
+        {
+            let modules: Vec<_> = self
+                .sources
+                .iter()
+                .filter_map(|s| s.module.as_deref())
+                .collect();
+            for a in &self.policy.allowed_dependencies {
+                for p in &a.modules {
+                    if !modules.iter().any(|m| matches_name(m, [p])) {
+                        errors.push(format!(
+                            "allowed dependency matches no workspace module: {p}"
+                        ))
+                    }
+                }
+                if let Some(review_by) = &a.review_by
+                    && review_by.as_str() < self.today.as_str()
+                {
                     errors.push(format!(
-                        "allowed dependency matches no workspace module: {p}"
-                    ))
+                        "allowed dependency review_by {review_by} has expired: {}",
+                        a.modules.join(", ")
+                    ));
                 }
             }
-        }
-        for n in self.policy.domain_dependencies.keys() {
-            if !modules.iter().any(|m| {
-                let p: Vec<_> = m.split('.').collect();
-                p.len() > 2 && p[1] == "domains" && p[2] == n
-            }) {
-                errors.push(format!("declared domain matches no domains/ package: {n}"))
+            for n in self.policy.domain_dependencies.keys() {
+                if !modules.iter().any(|m| {
+                    let mut p = m.split('.');
+                    p.next().is_some()
+                        && p.next() == Some("domains")
+                        && p.next() == Some(n.as_str())
+                }) {
+                    errors.push(format!("declared domain matches no domains/ package: {n}"))
+                }
             }
         }
         let count: usize = self
@@ -809,7 +1045,8 @@ impl Workspace {
         errors
     }
 }
-pub fn load(root: &Path) -> Result<Workspace, String> {
+
+fn load_impl(root: &Path, parse_files: bool) -> Result<Workspace, String> {
     let _span = crate::profile::span("workspace_load");
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let manifest = root.join("leesh.toml");
@@ -851,9 +1088,14 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
             "override_budget",
             "dependency_override_budget",
             "baseline",
+            "strict",
         ],
         "workspace",
     )?;
+    let strict = w.get("strict").map_or(Ok(false), |v| {
+        v.as_bool()
+            .ok_or_else(|| "workspace.strict must be true or false".to_owned())
+    })?;
     let mut projects = BTreeSet::new();
     let mut paths = BTreeSet::new();
     for entry in walkdir::WalkDir::new(&root).into_iter().filter_entry(|e| {
@@ -863,16 +1105,10 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
         let e = entry.map_err(|e| e.to_string())?;
         if e.file_type().is_file() {
             if e.file_name() == "pyproject.toml" {
-                projects.insert(
-                    e.path()
-                        .parent()
-                        .unwrap()
-                        .canonicalize()
-                        .map_err(|e| e.to_string())?,
-                );
+                projects.insert(e.path().parent().unwrap().to_path_buf());
             }
             if e.path().extension().is_some_and(|s| s == "py") {
-                paths.insert(e.path().canonicalize().map_err(|e| e.to_string())?);
+                paths.insert(e.path().to_path_buf());
             }
         }
     }
@@ -896,12 +1132,55 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
         "test-support".into(),
     ];
     let conventions = vec![
-        ("conftest.py".into(), "test".into()),
+        ("conftest.py".into(), "integration_test".into()),
         ("tests/**/*.py".into(), "test".into()),
+        ("tests/**/conftest.py".into(), "integration_test".into()),
+        (
+            "tests/**/integration/**/*.py".into(),
+            "integration_test".into(),
+        ),
+        (
+            "tests/**/integrations/**/*.py".into(),
+            "integration_test".into(),
+        ),
+        (
+            "tests/**/persistence/**/*.py".into(),
+            "integration_test".into(),
+        ),
+        ("tests/**/e2e/**/*.py".into(), "integration_test".into()),
+        (
+            "tests/**/contract/**/*.py".into(),
+            "integration_test".into(),
+        ),
+        ("tests/**/smoke/**/*.py".into(), "integration_test".into()),
+        (
+            "tests/**/adapters/**/*.py".into(),
+            "integration_test".into(),
+        ),
+        (
+            "tests/**/fixtures/**/*.py".into(),
+            "integration_test".into(),
+        ),
+        ("tests/**/helpers/**/*.py".into(), "integration_test".into()),
+        ("tests/**/fakes/**/*.py".into(), "integration_test".into()),
+        ("tests/**/testing/**/*.py".into(), "integration_test".into()),
+        (
+            "tests/**/*_integration_test.py".into(),
+            "integration_test".into(),
+        ),
+        ("tests/**/*_e2e_test.py".into(), "integration_test".into()),
+        (
+            "tests/**/test_*_integration.py".into(),
+            "integration_test".into(),
+        ),
+        ("tests/**/test_*_e2e.py".into(), "integration_test".into()),
         ("scripts/**/*.py".into(), "boundary".into()),
         ("examples/**/*.py".into(), "boundary".into()),
         ("migrations/**/*.py".into(), "transaction".into()),
     ];
+    for pats in layouts.values_mut() {
+        pats.extend(conventions.iter().cloned());
+    }
     let mut layout_names = builtin.clone();
     for (n, v) in table(&raw["layouts"], "layouts")? {
         if layouts.contains_key(n) || !v.is_object() {
@@ -983,9 +1262,16 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
             keys(
                 e,
                 if key == "overrides" {
-                    &["package", "glob", "layer", "reason", "issue"]
+                    &["package", "glob", "layer", "reason", "issue", "review_by"]
                 } else {
-                    &["package", "importer", "imported", "reason", "issue"]
+                    &[
+                        "package",
+                        "importer",
+                        "imported",
+                        "reason",
+                        "issue",
+                        "review_by",
+                    ]
                 },
                 key,
             )?;
@@ -1024,26 +1310,62 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
             for f in ["reason", "issue"] {
                 e[f] = json!(string(&e[f], &format!("{key}.{f}"))?);
             }
+            if let Some(review_by) = iso_date(&e["review_by"], &format!("{key}.review_by"))? {
+                e["review_by"] = json!(review_by);
+            }
             map.entry(p).or_default().push(e);
         }
     }
-    let packages = projects
+    let packages: Vec<Package> = projects
         .into_iter()
         .map(|p| {
             let (k, l) = configured.remove(&p).unwrap_or((dk.clone(), dl.clone()));
+            let pkg_layers = layouts[&l].clone();
+            let pkg_overrides = overrides.remove(&p).unwrap_or_default();
+            let pkg_deps = deps.remove(&p).unwrap_or_default();
+            let compiled_layers = pkg_layers
+                .iter()
+                .map(|(g, _)| CompiledGlob::new(g))
+                .collect();
+            let compiled_overrides = pkg_overrides
+                .iter()
+                .map(|o| CompiledGlob::new(st(&o["glob"])))
+                .collect();
+            let dep_override_pairs = pkg_deps
+                .iter()
+                .map(|o| (st(&o["importer"]).to_owned(), st(&o["imported"]).to_owned()))
+                .collect();
             Package {
-                layers: layouts[&l].clone(),
+                layers: pkg_layers,
                 kind: k,
                 layout: l,
-                overrides: overrides.remove(&p).unwrap_or_default(),
-                dependency_overrides: deps.remove(&p).unwrap_or_default(),
+                overrides: pkg_overrides,
+                dependency_overrides: pkg_deps,
+                compiled_layers,
+                compiled_overrides,
+                dep_override_pairs,
                 root: p,
             }
         })
         .collect();
+    let has_dependency_overrides = packages.iter().any(|p| !p.dep_override_pairs.is_empty());
+    let mut packages_by_depth: Vec<usize> = (0..packages.len()).collect();
+    packages_by_depth.sort_by_key(|&i| std::cmp::Reverse(packages[i].root.components().count()));
+
     let mut ignores = vec![];
     for e in tables(&raw["ignore"], "ignore")? {
-        keys(e, &["rules", "paths", "layers", "reason"], "ignore")?;
+        keys(
+            e,
+            &[
+                "rules",
+                "paths",
+                "layers",
+                "reason",
+                "review_by",
+                "max_count",
+            ],
+            "ignore",
+        )?;
         let rules = strings(&e["rules"], "ignore.rules")?;
         if rules.is_empty() {
             return Err("ignore.rules must name at least one rule".into());
@@ -1059,6 +1381,8 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
                 .map(|s| choice(&json!(s), "ignore.layers", &names))
                 .collect::<Result<_, _>>()?,
             reason: string(&e["reason"], "ignore.reason")?,
+            review_by: iso_date(&e["review_by"], "ignore.review_by")?,
+            max_count: opt_integer(&e["max_count"], "ignore.max_count")?,
         });
     }
     let baseline_path = w
@@ -1097,8 +1421,12 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
     }
     let mut ws = Workspace {
         module_index: HashMap::new(),
-        loaded_cache: Mutex::new(HashMap::new()),
-        import_cache: HashMap::new(),
+        defined_packages: HashSet::new(),
+        init_closures: Box::new([]),
+        scc_cache: OnceLock::new(),
+        server_roots_cache: OnceLock::new(),
+        packages_by_depth,
+        has_dependency_overrides,
         root,
         manifest: manifest.is_file().then_some(manifest),
         packages,
@@ -1113,22 +1441,50 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
             &w["dependency_override_budget"],
             "workspace.dependency_override_budget",
         )?,
+        strict,
+        today: today_utc(),
     };
-    let paths: Vec<_> = paths
+    let owned_paths: Vec<(PathBuf, usize)> = paths
         .into_iter()
-        .filter(|p| ws.owner(p).is_some())
+        .filter_map(|p| ws.owner(&p).map(|owner| (p, owner)))
         .collect();
-    // The indexed parallel iterator preserves path order while resolving each
-    // file's symbols on the same worker as its parse.
-    let parsed: Vec<_> = paths
+
+    if !parse_files {
+        ws.sources = owned_paths
+            .into_iter()
+            .map(|(path, owner)| Source {
+                filename: relative(&path, &ws.root),
+                classification: ws.classify_in(&path, owner),
+                is_marker_file: path.file_name().is_some_and(|s| s == "__init__.py"),
+                path,
+                owner,
+                module: None,
+                package: None,
+                top_imports: Box::new([]),
+                init_imports: Box::new([]),
+                all_imports: Box::new([]),
+                top_defs: Box::new([]),
+                classes: Box::new([]),
+                deferred_local: Default::default(),
+                local_findings: Vec::new(),
+            })
+            .collect();
+        return Ok(ws);
+    }
+
+    // Stream each file: parse -> resolve symbols -> run local rules & extract compact summary ->
+    // immediately drop source text, AST, and Symbols so peak RSS stays O(threads).
+    let parsed: Vec<_> = owned_paths
         .par_iter()
-        .map(|path| {
+        .map(|(path, owner)| {
+            let owner = *owner;
             let src = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
             let tree = match ast::parse(&src) {
                 Ok(tree) => tree,
                 Err(error) => return Ok(Err((path.clone(), error))),
             };
-            let owner = ws.owner(path).unwrap();
+            drop(src);
+            let is_marker_file = path.file_name().is_some_and(|s| s == "__init__.py");
             let module = path
                 .strip_prefix(ws.packages[owner].root.join("src"))
                 .ok()
@@ -1145,24 +1501,53 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
                     s
                 });
             let package = module.as_ref().map(|m| {
-                if path.file_name().is_some_and(|s| s == "__init__.py") {
+                if is_marker_file {
                     m.clone()
                 } else {
                     m.rsplit_once('.').map_or("", |(p, _)| p).into()
                 }
             });
+            let filename = relative(path, &ws.root);
+            let classification = ws.classify_in(path, owner);
             let symbols = symbols::resolve(&tree, package.as_deref());
+            let nodes = ast::walk(&tree);
+
+            let top_imports = extract_top_imports(&tree, package.as_deref());
+            let init_imports = extract_init_imports(&tree, package.as_deref());
+            let all_imports = extract_all_imports(&nodes, package.as_deref());
+
+            let ctx = FileContext {
+                path,
+                filename: &filename,
+                owner,
+                module: module.as_deref(),
+                package: package.as_deref(),
+                classification: classification.as_ref(),
+                tree: &tree,
+                nodes: &nodes,
+                symbols: &symbols,
+            };
+            let local = rules::check_local(&ctx, &ws.policy, ws.strict);
+            // `tree`, `nodes`, and `symbols` drop right here at the end of the closure.
             Ok(Ok(Source {
-                filename: relative(path, &ws.root),
-                classification: ws.classify(path),
                 path: path.clone(),
-                tree,
+                filename,
+                owner,
                 module,
                 package,
-                symbols,
+                classification,
+                is_marker_file,
+                top_imports,
+                init_imports,
+                all_imports,
+                top_defs: local.top_defs,
+                classes: local.classes,
+                deferred_local: local.deferred,
+                local_findings: local.findings,
             }))
         })
         .collect::<Result<_, String>>()?;
+
     for result in parsed {
         match result {
             Ok(source) => ws.sources.push(source),
@@ -1175,12 +1560,24 @@ pub fn load(root: &Path) -> Result<Workspace, String> {
         .enumerate()
         .filter_map(|(i, s)| s.module.clone().map(|m| (m, i)))
         .collect();
-    ws.import_cache = ws
-        .sources
-        .iter()
-        .map(|source| (source.path.clone(), SourceImports::default()))
+    ws.defined_packages = ws
+        .module_index
+        .keys()
+        .map(|m| m.split('.').next().unwrap_or(m).to_owned())
         .collect();
+    ws.init_closures = (0..ws.sources.len())
+        .map(|_| OnceLock::new())
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
     Ok(ws)
+}
+
+pub fn load(root: &Path) -> Result<Workspace, String> {
+    load_impl(root, true)
+}
+
+pub fn load_metadata(root: &Path) -> Result<Workspace, String> {
+    load_impl(root, false)
 }
 
 fn baseline_json_error(text: &str, error: serde_json::Error) -> String {
@@ -1213,11 +1610,38 @@ mod tests {
     use super::*;
     #[test]
     fn glob_segments_and_recursive_zero_depth() {
-        assert!(matches_glob("src/app/core.py", "src/**/core.py"));
-        assert!(matches_glob("core.py", "**/core.py"));
-        assert!(!matches_glob("src/app/deep/core.py", "src/*/core.py"));
-        assert!(matches_glob("tests/test_a.py", "tests/test_[a-z].py"));
-        assert!(!matches_glob("tests/test_a.py", "tests/test_[!a-z].py"));
+        for (path, glob) in [
+            ("src/example/core.py", "src/*/core.py"),
+            ("src/example/core.py", "src/**/*.py"),
+            ("src/example/a/b/core.py", "src/**/*.py"),
+            (
+                "src/example/domains/orders/core.py",
+                "src/*/domains/**/core.py",
+            ),
+            ("src/example/domains/core.py", "src/*/domains/**/core.py"),
+            ("tests/test_x.py", "tests/**"),
+            ("tests/a/b.py", "tests/**"),
+            ("conftest.py", "conftest.py"),
+            ("src/example/v2.py", "src/example/v[0-9].py"),
+            ("src/example/a.py", "src/example/?.py"),
+            ("src/app/core.py", "src/**/core.py"),
+            ("core.py", "**/core.py"),
+            ("tests/test_a.py", "tests/test_[a-z].py"),
+        ] {
+            assert!(matches_glob(path, glob), "{path} should match {glob}");
+        }
+        for (path, glob) in [
+            ("src/example/a/core.py", "src/*/core.py"),
+            ("tests/conftest.py", "conftest.py"),
+            ("src/core.py", "src/*/domains/**/core.py"),
+            ("src/example/core.pyi", "src/**/*.py"),
+            ("src/example/ab.py", "src/example/?.py"),
+            ("src/example.py", "src/**/x.py"),
+            ("src/app/deep/core.py", "src/*/core.py"),
+            ("tests/test_a.py", "tests/test_[!a-z].py"),
+        ] {
+            assert!(!matches_glob(path, glob), "{path} should not match {glob}");
+        }
     }
     #[test]
     fn unclosed_toml_table_matches_python_diagnostic() {
@@ -1278,22 +1702,13 @@ mod tests {
                 .windows(2)
                 .all(|pair| pair[0].path < pair[1].path)
         );
-        let core = ws.module_source("example.domains.orders.core").unwrap();
+        let core_idx = ws.module_index("example.domains.orders.core").unwrap();
+        let core = &ws.sources[core_idx];
         assert_eq!(core.filename, "src/example/domains/orders/core.py");
         assert_eq!(core.package.as_deref(), Some("example.domains.orders"));
-        let top = ws.top_imports(core);
-        assert_eq!(top[0].1, "httpx");
-        assert!(std::ptr::eq(top, ws.top_imports(core)));
-        let initialization = ws.initialization_imports(core);
-        assert_eq!(initialization, &[("httpx".into(), None)]);
-        assert!(std::ptr::eq(
-            initialization,
-            ws.initialization_imports(core)
-        ));
-        let findings = crate::dependencies::check(
-            ws.module_source("example.domains.orders.core").unwrap(),
-            &ws,
-        );
+        assert_eq!(&*core.top_imports[0].module, "httpx");
+        assert_eq!(&*core.init_imports, &[("httpx".into(), None)]);
+        let findings = crate::dependencies::check(core_idx, core, &ws);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].code, "LIT102");
         std::fs::remove_dir_all(root).unwrap();

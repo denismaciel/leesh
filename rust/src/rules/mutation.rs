@@ -1,10 +1,12 @@
 use super::*;
-#[derive(Clone, Default, PartialEq, Eq)]
-struct Origin {
-    borrowed: Option<String>,
-    members: Option<String>,
-    kind: Option<String>,
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct Origin<'a> {
+    borrowed: Option<&'a str>,
+    members: Option<&'a str>,
+    kind: Option<&'a str>,
 }
+
 fn mutators(k: &str) -> &'static [&'static str] {
     match k {
         "builtins.list" => &[
@@ -38,6 +40,7 @@ fn mutators(k: &str) -> &'static [&'static str] {
         _ => &[],
     }
 }
+
 fn any_mutator(attr: &str) -> bool {
     [
         "builtins.list",
@@ -48,7 +51,7 @@ fn any_mutator(attr: &str) -> bool {
     .iter()
     .any(|k| mutators(k).contains(&attr))
 }
-// Calls whose result still holds the first argument's members.
+
 const SHALLOW_COPIES: &[&str] = &["copy.copy", "dataclasses.replace"];
 const ELEMENT_VIEWS: &[&str] = &[
     "builtins.enumerate",
@@ -58,15 +61,37 @@ const ELEMENT_VIEWS: &[&str] = &[
     "builtins.sorted",
     "builtins.zip",
 ];
-struct Visitor<'a> {
-    file: &'a Source,
-    aliases: HashMap<String, Origin>,
-    out: Vec<Finding>,
+
+fn for_each_stored<'a>(n: &'a Node, f: &mut impl FnMut(&'a str)) {
+    if kind(n) == "Name" {
+        if kind(child(n, "ctx")) == "Store" {
+            f(s(n, "id"));
+        }
+        return;
+    }
+    for_each_child(n, |c| for_each_stored(c, f));
 }
-impl Visitor<'_> {
-    fn origin(&self, n: &Node) -> Origin {
+
+struct Visitor<'a, 'f> {
+    file: &'f FileContext<'a>,
+    aliases: HashMap<&'a str, Origin<'a>>,
+    undo: Vec<(&'a str, Option<Origin<'a>>)>,
+    record_depth: u32,
+    out: &'f mut Vec<Finding>,
+}
+
+impl<'a> Visitor<'a, '_> {
+    #[inline]
+    fn set_alias(&mut self, name: &'a str, val: Origin<'a>) {
+        let prev = self.aliases.insert(name, val);
+        if self.record_depth > 0 {
+            self.undo.push((name, prev));
+        }
+    }
+
+    fn origin(&self, n: &'a Node) -> Origin<'a> {
         match kind(n) {
-            "Name" => self.aliases.get(s(n, "id")).cloned().unwrap_or_default(),
+            "Name" => self.aliases.get(s(n, "id")).copied().unwrap_or_default(),
             "Attribute" | "Subscript" => {
                 let b = self.origin(child(n, "value"));
                 let root = b.borrowed.or(b.members);
@@ -84,34 +109,48 @@ impl Visitor<'_> {
                 }
             }
             "List" | "Dict" | "Set" => {
-                let roots = items(n, if kind(n) == "Dict" { "values" } else { "elts" })
-                    .iter()
-                    .filter_map(|v| self.origin(v).borrowed)
-                    .collect::<BTreeSet<_>>();
+                let k = kind(n);
+                let field = if k == "Dict" { "values" } else { "elts" };
+                let mut single: Option<&'a str> = None;
+                let mut multiple = false;
+                for v in items(n, field) {
+                    if let Some(root) = self.origin(v).borrowed {
+                        match single {
+                            None => single = Some(root),
+                            Some(prev) if prev == root => {}
+                            Some(_) => {
+                                multiple = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                let kind_name = match k {
+                    "List" => "builtins.list",
+                    "Dict" => "builtins.dict",
+                    _ => "builtins.set",
+                };
                 Origin {
-                    members: if roots.len() == 1 {
-                        roots.first().cloned()
-                    } else {
-                        None
-                    },
-                    kind: Some(format!("builtins.{}", kind(n).to_lowercase())),
+                    members: if multiple { None } else { single },
+                    kind: Some(kind_name),
                     ..Origin::default()
                 }
             }
             "Call" => {
                 let f = child(n, "func");
-                let ns = names(self.file, f);
-                let name = if ns.len() == 1 {
-                    ns.first().map(String::as_str).unwrap_or("")
-                } else {
-                    ""
-                };
+                let name = self.file.symbols.only_str(f).unwrap_or("");
                 let first = items(n, "args").first();
                 if !mutators(name).is_empty() {
                     let source = first.map(|n| self.origin(n)).unwrap_or_default();
+                    let kind_static = match name {
+                        "builtins.list" => "builtins.list",
+                        "builtins.dict" => "builtins.dict",
+                        "builtins.set" => "builtins.set",
+                        _ => "collections.deque",
+                    };
                     Origin {
                         members: source.borrowed.or(source.members),
-                        kind: Some(name.into()),
+                        kind: Some(kind_static),
                         ..Origin::default()
                     }
                 } else if SHALLOW_COPIES.contains(&name)
@@ -124,27 +163,28 @@ impl Visitor<'_> {
                         ..Origin::default()
                     }
                 } else if ELEMENT_VIEWS.contains(&name) {
-                    let roots = items(n, "args")
-                        .iter()
-                        .filter_map(|a| {
-                            let source = self.origin(a);
-                            source.borrowed.or(source.members)
-                        })
-                        .collect::<BTreeSet<_>>();
+                    let mut single: Option<&'a str> = None;
+                    let mut multiple = false;
+                    for a in items(n, "args") {
+                        let source = self.origin(a);
+                        if let Some(root) = source.borrowed.or(source.members) {
+                            match single {
+                                None => single = Some(root),
+                                Some(prev) if prev == root => {}
+                                Some(_) => {
+                                    multiple = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     Origin {
-                        members: if roots.len() == 1 {
-                            roots.first().cloned()
-                        } else {
-                            None
-                        },
+                        members: if multiple { None } else { single },
                         ..Origin::default()
                     }
                 } else if kind(f) == "Attribute" {
                     let source = self.origin(child(f, "value"));
-                    let known = source
-                        .kind
-                        .as_deref()
-                        .is_some_and(|k| !mutators(k).is_empty());
+                    let known = source.kind.is_some_and(|k| !mutators(k).is_empty());
                     let root = source.borrowed.or(source.members);
                     match s(f, "attr") {
                         "copy" => Origin {
@@ -169,10 +209,11 @@ impl Visitor<'_> {
             _ => Origin::default(),
         }
     }
-    fn report(&mut self, n: &Node, o: Origin) {
+
+    fn report(&mut self, n: &Node, o: Origin<'a>) {
         if let Some(b) = o.borrowed {
             add(
-                &mut self.out,
+                self.out,
                 self.file,
                 n,
                 "LIT204",
@@ -180,73 +221,94 @@ impl Visitor<'_> {
             );
         }
     }
-    fn write(&mut self, n: &Node) {
+
+    fn write(&mut self, n: &'a Node) {
         match kind(n) {
             "Attribute" | "Subscript" => self.report(n, self.origin(child(n, "value"))),
             "Tuple" | "List" => {
                 for e in items(n, "elts") {
-                    self.write(e)
+                    self.write(e);
                 }
             }
             _ => (),
         }
     }
-    fn bind(&mut self, n: &Node, o: Origin) {
-        for part in walk(n) {
-            if kind(part) == "Name" && kind(child(part, "ctx")) == "Store" {
-                self.aliases.insert(
-                    s(part, "id").into(),
-                    if kind(n) == "Name" {
-                        o.clone()
-                    } else {
-                        Origin {
-                            borrowed: o.borrowed.clone().or(o.members.clone()),
-                            ..Origin::default()
-                        }
-                    },
-                );
+
+    fn bind(&mut self, n: &'a Node, o: Origin<'a>) {
+        if kind(n) == "Name" {
+            if kind(child(n, "ctx")) == "Store" {
+                self.set_alias(s(n, "id"), o);
             }
+            return;
+        }
+        let derived = Origin {
+            borrowed: o.borrowed.or(o.members),
+            ..Origin::default()
+        };
+        let mut names = Vec::new();
+        for_each_stored(n, &mut |name| names.push(name));
+        for name in names {
+            self.set_alias(name, derived);
         }
     }
-    fn body(&mut self, b: &[Node]) {
+
+    fn body(&mut self, b: &'a [Node]) {
         for n in b {
-            self.visit(n)
+            self.visit(n);
         }
     }
-    fn branches(&mut self, branches: Vec<Vec<&Node>>) {
-        let mut exits = Vec::new();
+
+    fn branches(&mut self, branches: Vec<Vec<&'a Node>>) {
+        self.record_depth += 1;
+        let mut deltas: Vec<HashMap<&'a str, Origin<'a>>> = Vec::with_capacity(branches.len());
+        let mut changed_keys: Vec<&'a str> = Vec::new();
         for body in branches {
-            let mut v = Visitor {
-                file: self.file,
-                aliases: self.aliases.clone(),
-                out: vec![],
-            };
+            let mark = self.undo.len();
             for n in body {
-                v.visit(n)
+                self.visit(n);
             }
-            self.out.extend(v.out);
-            exits.push(v.aliases);
+            let mut delta = HashMap::new();
+            for &(k, _) in &self.undo[mark..] {
+                if !delta.contains_key(k) {
+                    if let Some(&val) = self.aliases.get(k) {
+                        delta.insert(k, val);
+                    }
+                    if !changed_keys.contains(&k) {
+                        changed_keys.push(k);
+                    }
+                }
+            }
+            while self.undo.len() > mark {
+                let (k, prev) = self.undo.pop().unwrap();
+                match prev {
+                    Some(v) => {
+                        self.aliases.insert(k, v);
+                    }
+                    None => {
+                        self.aliases.remove(k);
+                    }
+                }
+            }
+            deltas.push(delta);
         }
-        let keys = exits
-            .iter()
-            .flat_map(|b| b.keys().cloned())
-            .collect::<HashSet<_>>();
-        for name in keys {
-            let vals = exits
+        self.record_depth -= 1;
+
+        for name in changed_keys {
+            let pre = self.aliases.get(name).copied().unwrap_or_default();
+            let first = deltas[0].get(name).copied().unwrap_or(pre);
+            let merged = if deltas[1..]
                 .iter()
-                .map(|b| b.get(&name).cloned().unwrap_or_default())
-                .collect::<Vec<_>>();
-            self.aliases.insert(
-                name,
-                if vals.iter().all(|v| v == &vals[0]) {
-                    vals[0].clone()
-                } else {
-                    Origin::default()
-                },
-            );
+                .all(|d| d.get(name).copied().unwrap_or(pre) == first)
+            {
+                first
+            } else {
+                Origin::default()
+            };
+            self.set_alias(name, merged);
         }
     }
-    fn visit(&mut self, n: &Node) {
+
+    fn visit(&mut self, n: &'a Node) {
         match kind(n) {
             "FunctionDef" | "AsyncFunctionDef" | "ClassDef" | "Lambda" => (),
             "Assign" => {
@@ -254,7 +316,7 @@ impl Visitor<'_> {
                 let o = self.origin(child(n, "value"));
                 for t in items(n, "targets") {
                     self.write(t);
-                    self.bind(t, o.clone());
+                    self.bind(t, o);
                 }
             }
             "AnnAssign" => {
@@ -274,11 +336,11 @@ impl Visitor<'_> {
                 let t = child(n, "target");
                 if kind(t) == "Name" {
                     let o = self.origin(t);
-                    if o.kind.as_deref().is_some_and(|k| !mutators(k).is_empty()) {
+                    if o.kind.is_some_and(|k| !mutators(k).is_empty()) {
                         self.report(n, o);
                     }
                 } else {
-                    self.write(t)
+                    self.write(t);
                 }
             }
             "Delete" => {
@@ -288,7 +350,6 @@ impl Visitor<'_> {
                 }
             }
             "Expr" => {
-                // A discarded result means the call was made for its effect on the receiver.
                 let call = child(n, "value");
                 let f = child(call, "func");
                 if kind(call) == "Call" && kind(f) == "Attribute" {
@@ -297,35 +358,26 @@ impl Visitor<'_> {
                         self.report(call, o);
                     }
                 }
-                for c in children(n) {
-                    self.visit(c)
-                }
+                for_each_child(n, |c| self.visit(c));
             }
             "Call" => {
                 let f = child(n, "func");
                 if kind(f) == "Attribute" {
                     let o = self.origin(child(f, "value"));
-                    if mutators(o.kind.as_deref().unwrap_or("")).contains(&s(f, "attr")) {
+                    if mutators(o.kind.unwrap_or("")).contains(&s(f, "attr")) {
                         self.report(n, o);
                     }
                 }
-                let ns = names(self.file, f);
-                if ns.len() == 1
-                    && ns.iter().all(|n| {
-                        [
-                            "builtins.setattr",
-                            "builtins.delattr",
-                            "builtins.object.__setattr__",
-                        ]
-                        .contains(&n.as_str())
-                    })
-                    && let Some(a) = items(n, "args").first()
+                if self.file.symbols.only_str(f).is_some_and(|name| {
+                    matches!(
+                        name,
+                        "builtins.setattr" | "builtins.delattr" | "builtins.object.__setattr__"
+                    )
+                }) && let Some(a) = items(n, "args").first()
                 {
                     self.report(n, self.origin(a));
                 }
-                for c in children(n) {
-                    self.visit(c)
-                }
+                for_each_child(n, |c| self.visit(c));
             }
             "For" => {
                 self.visit(child(n, "iter"));
@@ -364,91 +416,107 @@ impl Visitor<'_> {
                 self.body(items(n, "finalbody"));
             }
             "ListComp" | "SetComp" | "DictComp" | "GeneratorExp" => {
-                let mut v = Visitor {
-                    file: self.file,
-                    aliases: self.aliases.clone(),
-                    out: vec![],
-                };
+                self.record_depth += 1;
+                let mark = self.undo.len();
                 for g in items(n, "generators") {
-                    v.visit(child(g, "iter"));
-                    let o = v.origin(child(g, "iter"));
-                    v.bind(
+                    self.visit(child(g, "iter"));
+                    let o = self.origin(child(g, "iter"));
+                    self.bind(
                         child(g, "target"),
                         Origin {
                             borrowed: o.borrowed.or(o.members),
                             ..Origin::default()
                         },
                     );
-                    v.body(items(g, "ifs"));
+                    self.body(items(g, "ifs"));
                 }
                 if kind(n) == "DictComp" {
-                    v.visit(child(n, "key"));
-                    v.visit(child(n, "value"));
+                    self.visit(child(n, "key"));
+                    self.visit(child(n, "value"));
                 } else {
-                    v.visit(child(n, "elt"));
+                    self.visit(child(n, "elt"));
                 }
-                self.out.extend(v.out);
+                while self.undo.len() > mark {
+                    let (k, prev) = self.undo.pop().unwrap();
+                    match prev {
+                        Some(v) => {
+                            self.aliases.insert(k, v);
+                        }
+                        None => {
+                            self.aliases.remove(k);
+                        }
+                    }
+                }
+                self.record_depth -= 1;
             }
             _ => {
-                for c in children(n) {
-                    self.visit(c)
-                }
+                for_each_child(n, |c| self.visit(c));
             }
         }
     }
 }
-pub(super) fn check(file: &Source, out: &mut Vec<Finding>) {
+
+pub(super) fn check(file: &FileContext<'_>, out: &mut Vec<Finding>) {
     if !file.has_layer(&["core", "port"]) {
         return;
     }
-    for n in walk(&file.tree) {
-        if !["FunctionDef", "AsyncFunctionDef"].contains(&kind(n)) {
+    for &n in file.nodes {
+        let k = kind(n);
+        if k != "FunctionDef" && k != "AsyncFunctionDef" {
             continue;
         }
-        let aliases = parameters(n)
-            .into_iter()
-            .filter(|a| !["self", "cls"].contains(&s(a, "arg")))
-            .map(|a| {
-                let ns = names(file, child(a, "annotation"));
-                let k = if ns.len() == 1 && !child(a, "annotation").is_null() {
-                    ns.first().map(|n| match n.as_str() {
-                        "typing.List"
-                        | "typing.MutableSequence"
-                        | "collections.abc.MutableSequence" => "builtins.list".into(),
-                        "typing.Dict"
-                        | "typing.MutableMapping"
-                        | "collections.abc.MutableMapping" => "builtins.dict".into(),
-                        "typing.Set" | "typing.MutableSet" | "collections.abc.MutableSet" => {
-                            "builtins.set".into()
-                        }
-                        "collections.Counter"
-                        | "collections.OrderedDict"
-                        | "collections.defaultdict"
-                        | "typing.Counter"
-                        | "typing.DefaultDict"
-                        | "typing.OrderedDict" => "builtins.dict".into(),
-                        "typing.Deque" => "collections.deque".into(),
-                        _ => n.clone(),
-                    })
-                } else {
-                    None
-                };
-                (
-                    s(a, "arg").into(),
-                    Origin {
-                        borrowed: Some(s(a, "arg").into()),
-                        kind: k,
-                        ..Origin::default()
-                    },
-                )
-            })
-            .collect();
+        let mut aliases: HashMap<&str, Origin<'_>> = HashMap::new();
+        for a in parameters(n) {
+            let arg_name = s(a, "arg");
+            if arg_name == "self" || arg_name == "cls" {
+                continue;
+            }
+            let ann = child(a, "annotation");
+            let k = if !ann.is_null() {
+                file.symbols.only_str(ann).map(|name| match name {
+                    "builtins.list"
+                    | "typing.List"
+                    | "typing.MutableSequence"
+                    | "collections.abc.MutableSequence" => "builtins.list",
+                    "builtins.dict"
+                    | "typing.Dict"
+                    | "typing.MutableMapping"
+                    | "collections.abc.MutableMapping"
+                    | "collections.Counter"
+                    | "collections.OrderedDict"
+                    | "collections.defaultdict"
+                    | "typing.Counter"
+                    | "typing.DefaultDict"
+                    | "typing.OrderedDict" => "builtins.dict",
+                    "builtins.set"
+                    | "typing.Set"
+                    | "typing.MutableSet"
+                    | "collections.abc.MutableSet" => "builtins.set",
+                    "collections.deque" | "typing.Deque" => "collections.deque",
+                    other => other,
+                })
+            } else {
+                None
+            };
+            aliases.insert(
+                arg_name,
+                Origin {
+                    borrowed: Some(arg_name),
+                    kind: k,
+                    ..Origin::default()
+                },
+            );
+        }
+        if aliases.is_empty() {
+            continue;
+        }
         let mut v = Visitor {
             file,
             aliases,
-            out: vec![],
+            undo: Vec::new(),
+            record_depth: 0,
+            out,
         };
         v.body(items(n, "body"));
-        out.extend(v.out);
     }
 }

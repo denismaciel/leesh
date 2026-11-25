@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from conftest import Project
-
-from leesh.loader import ManifestError
+from conftest import ManifestError, Project
 
 BILLING = "src/example/domains/billing/service.py"
 BILLING_CORE = "src/example/domains/billing/core.py"
@@ -144,9 +142,9 @@ def test_invalid_graph_is_a_manifest_error(project: Project, manifest: str, mess
 
 def test_declared_domain_without_package_is_stale(project: Project) -> None:
     project.manifest(BILLING_DEPENDS_ON_ORDERS).write({BILLING: "", ORDERS_CORE: ""})
-    assert project.load().configuration_errors() == ()
+    assert [f.message for f in project.findings() if f.code == "LIT003"] == []
 
     project.manifest(BILLING_DEPENDS_ON_ORDERS + "legacy = []\n")
-    assert project.load().configuration_errors() == (
-        "declared domain matches no domains/ package: legacy",
-    )
+    assert [f.message for f in project.findings() if f.code == "LIT003"] == [
+        "declared domain matches no domains/ package: legacy"
+    ]

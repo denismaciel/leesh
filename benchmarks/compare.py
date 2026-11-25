@@ -127,30 +127,21 @@ def main() -> None:
             digest.update(str(file.relative_to(path)).encode() + b"\0" + file.read_bytes())
         for jobs in args.jobs:
             options = ["check", "--root", str(path), "--format", "json", "--jobs", str(jobs)]
-            commands = {
-                "python": [
-                    sys.executable,
-                    "-c",
-                    "from leesh.cli import main; raise SystemExit(main())",
-                    *options,
-                ],
-                "rust": [str(args.binary.resolve()), *options],
-            }
+            commands = {"rust": [str(args.binary.resolve()), *options]}
             if args.baseline_binary:
                 commands["rust_before"] = [str(args.baseline_binary.resolve()), *options]
-            # Warm up and require complete diagnostics and summary equality BEFORE timing.
-            _, expected, expected_exit = invoke(commands["python"])
-            _, actual, actual_exit = invoke(commands["rust"])
-            if (expected, expected_exit) != (actual, actual_exit):
-                for name, value in [("python", expected), ("rust", actual)]:
-                    (args.work / f"{project['name']}-{name}.json").write_text(
-                        json.dumps(value, indent=2)
-                    )
-                raise AssertionError(f"{project['name']}: outputs differ; inspect {args.work}")
+            # Warm up and verify determinism (and baseline equality when comparing two builds).
+            _, expected, expected_exit = invoke(commands["rust"])
             if args.baseline_binary:
                 _, baseline, baseline_exit = invoke(commands["rust_before"])
                 if (baseline, baseline_exit) != (expected, expected_exit):
-                    raise AssertionError(f"{project['name']}: baseline Rust differs")
+                    for name, value in [("rust_before", baseline), ("rust", expected)]:
+                        (args.work / f"{project['name']}-{name}.json").write_text(
+                            json.dumps(value, indent=2)
+                        )
+                    raise AssertionError(
+                        f"{project['name']}: baseline Rust differs; inspect {args.work}"
+                    )
             timings = {name: [] for name in commands}
             for index in range(args.runs):
                 order = list(commands)
@@ -176,15 +167,19 @@ def main() -> None:
                 ).hexdigest(),
                 "seconds": timings,
                 "median_seconds": medians,
-                "speedup": medians["python"] / medians["rust"],
             }
             if args.baseline_binary:
                 row["rust_speedup"] = medians["rust_before"] / medians["rust"]
+                detail = (
+                    f"before {medians['rust_before']:.3f}s / after {medians['rust']:.3f}s "
+                    f"= {row['rust_speedup']:.2f}x"
+                )
+            else:
+                detail = f"Rust {medians['rust']:.3f}s"
             report["results"].append(row)
             print(
                 f"{project['name']} jobs={jobs}: {row['files']} files, {row['findings']} findings, "
-                f"Python {medians['python']:.3f}s / Rust {medians['rust']:.3f}s "
-                f"= {row['speedup']:.2f}x",
+                f"{detail}",
                 flush=True,
             )
             args.output.write_text(json.dumps(report, indent=2) + "\n")

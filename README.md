@@ -116,7 +116,7 @@ the built-in ones (a Temporal workflow is a deterministic router). Then:
 
 | Layer | Holds | May import (default) |
 | --- | --- | --- |
-| `core` | decisions, values, policies | core, port |
+| `core` | decisions, values, policies | core |
 | `port` | interfaces the core needs | core, port |
 | `shell` | orchestration of core and ports | core, port, shell |
 | `adapter` | implementations of ports | core, port, adapter |
@@ -142,17 +142,17 @@ See [docs/rules.md](docs/rules.md) for every rule and
 
 ## Rust implementation
 
-The installed CLI uses Rust. The original Python implementation remains in the
-package for compatibility and differential testing. To build Rust locally:
+Leesh is implemented in Rust and packaged with a thin Python launcher shim for
+PyPI and `uvx` distribution. To build Rust locally:
 
 ```bash
 cargo build --locked --release --manifest-path rust/Cargo.toml
 rust/target/release/leesh-rust check
 ```
 
-It reuses Ruff's parser, parallelizes analysis, and preserves Leesh's rules and
+It reuses Ruff's parser, parallelizes analysis, and exposes Leesh's rules and
 CLI commands. See [build and verification instructions](rust/README.md) and the
-[Python/Rust performance comparison](benchmarks/README.md).
+[performance benchmarks](benchmarks/README.md).
 
 ## Development
 
@@ -161,14 +161,13 @@ cargo build --locked --release --manifest-path rust/Cargo.toml
 export LEESH_NATIVE_BINARY="$PWD/rust/target/release/leesh-rust"
 make dev check test
 make build release-check
-uv run leesh rules --format markdown > docs/rules.md  # after changing a rule docstring
+uv run leesh rules --format markdown > docs/rules.md  # after changing rust/src/registry.json
 ```
 
 Python packaging uses uv and uv_build with a small native-artifact adapter.
 See [release instructions](docs/releasing.md) for preparation and tagged releases.
 
-A rule is a class with a `code`, a `name`, a docstring (its documentation) and
-`check(file: SourceFile)`. Register it in `src/leesh/rules/registry.py`.
+Rules live in `rust/src/rules/` and are documented in `rust/src/registry.json`.
 
 ## License
 

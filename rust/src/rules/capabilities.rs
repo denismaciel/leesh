@@ -1,4 +1,5 @@
 use super::*;
+
 const EFFECTFUL: &[&str] = &[
     "aiohttp.ClientSession",
     "aiohttp.client.ClientSession",
@@ -27,13 +28,20 @@ const EFFECTFUL: &[&str] = &[
     "typing.IO",
     "typing.TextIO",
 ];
-// Field values and list elements, the positions a nested node can occupy.
-fn nested(n: &mut Node) -> impl Iterator<Item = &mut Node> {
-    n.values_mut().flat_map(|v| match v {
-        Node::List(values) => values.iter_mut().collect::<Vec<_>>(),
-        v => vec![v],
-    })
+
+fn for_each_nested_mut(n: &mut Node, f: &mut impl FnMut(&mut Node)) {
+    for v in n.values_mut() {
+        match v {
+            Node::List(values) => {
+                for item in values.iter_mut() {
+                    f(item);
+                }
+            }
+            other => f(other),
+        }
+    }
 }
+
 fn normalize(n: &mut Node) {
     if kind(n) == "Constant"
         && let Some(text) = n["value"].as_str()
@@ -47,108 +55,172 @@ fn normalize(n: &mut Node) {
         *n = parsed;
         return;
     }
-    nested(n).for_each(normalize)
+    for_each_nested_mut(n, &mut normalize);
 }
+
 fn rewrite(n: &mut Node, owner: &str) {
     if kind(n) == owner
         && let Some(a) = n.get_mut("annotation")
     {
-        normalize(a)
+        normalize(a);
     }
-    nested(n).for_each(|n| rewrite(n, owner))
+    for_each_nested_mut(n, &mut |child| rewrite(child, owner));
 }
+
 fn reid(n: &mut Node, c: &mut usize) {
     if n.is_node() {
         n.set_id(*c);
         *c += 1;
     }
-    for v in nested(n) {
-        reid(v, c)
-    }
+    for_each_nested_mut(n, &mut |child| reid(child, c));
 }
-/// A private tree with the forward annotations of `owner` nodes parsed, if there are any.
-pub(super) fn parsed_annotations(file: &Source, owner: &str) -> Option<(Node, symbols::Symbols)> {
-    let has_strings = walk(&file.tree)
-        .into_iter()
-        .filter(|n| kind(n) == owner)
-        .any(|a| {
-            walk(child(a, "annotation"))
-                .into_iter()
-                .any(|n| kind(n) == "Constant" && n["value"].is_string())
-        });
+
+fn rewrite_all(n: &mut Node) {
+    if matches!(kind(n), "arg" | "AnnAssign")
+        && let Some(a) = n.get_mut("annotation")
+    {
+        normalize(a);
+    } else if matches!(kind(n), "FunctionDef" | "AsyncFunctionDef")
+        && let Some(r) = n.get_mut("returns")
+    {
+        normalize(r);
+    }
+    for_each_nested_mut(n, &mut rewrite_all);
+}
+
+fn has_string_constant(n: &Node) -> bool {
+    if kind(n) == "Constant" && n["value"].is_string() {
+        return true;
+    }
+    let mut found = false;
+    for_each_child(n, |c| {
+        if !found && has_string_constant(c) {
+            found = true;
+        }
+    });
+    found
+}
+
+pub(super) fn parsed_all_annotations(
+    tree: &Node,
+    nodes: &[&Node],
+    package: Option<&str>,
+) -> Option<(Node, symbols::Symbols)> {
+    let has_strings = nodes.iter().any(|&n| {
+        let ann = match kind(n) {
+            "arg" | "AnnAssign" => child(n, "annotation"),
+            "FunctionDef" | "AsyncFunctionDef" => child(n, "returns"),
+            _ => return false,
+        };
+        !ann.is_null() && has_string_constant(ann)
+    });
     if !has_strings {
         return None;
     }
-    let mut tree = file.tree.clone();
-    rewrite(&mut tree, owner);
-    reid(&mut tree, &mut 1);
-    let resolved = symbols::resolve(&tree, file.package.as_deref());
-    Some((tree, resolved))
+    let mut cloned = tree.clone();
+    rewrite_all(&mut cloned);
+    reid(&mut cloned, &mut 1);
+    let resolved = symbols::resolve(&cloned, package);
+    Some((cloned, resolved))
 }
-/// Type expressions in an annotation: not `Literal` values or `Annotated` metadata.
-pub(super) fn annotation_nodes<'a>(n: &'a Node, symbols: &symbols::Symbols) -> Vec<&'a Node> {
-    let mut out = vec![n];
-    if kind(n) == "Subscript" {
-        let ns = symbols::names(symbols, child(n, "value"));
-        if ns
-            .iter()
-            .any(|s| ["typing.Literal", "typing_extensions.Literal"].contains(&s.as_str()))
-        {
-            return out;
+
+/// A private tree with the forward annotations of `owner` nodes parsed, if there are any.
+pub(super) fn parsed_annotations(
+    tree: &Node,
+    nodes: &[&Node],
+    package: Option<&str>,
+    owner: &str,
+) -> Option<(Node, symbols::Symbols)> {
+    let has_strings = nodes.iter().any(|&n| {
+        kind(n) == owner && {
+            let ann = child(n, "annotation");
+            !ann.is_null() && has_string_constant(ann)
         }
-        if ns
-            .iter()
-            .any(|s| ["typing.Annotated", "typing_extensions.Annotated"].contains(&s.as_str()))
-        {
+    });
+    if !has_strings {
+        return None;
+    }
+    let mut cloned = tree.clone();
+    rewrite(&mut cloned, owner);
+    reid(&mut cloned, &mut 1);
+    let resolved = symbols::resolve(&cloned, package);
+    Some((cloned, resolved))
+}
+
+/// Visits type expressions in an annotation: skips `Literal` values and `Annotated` metadata.
+pub(super) fn visit_annotation_nodes<'a>(
+    n: &'a Node,
+    symbols: &symbols::Symbols,
+    f: &mut impl FnMut(&'a Node),
+) {
+    f(n);
+    if kind(n) == "Subscript" {
+        let val = child(n, "value");
+        if symbols.any(val, |s| {
+            s == "typing.Literal" || s == "typing_extensions.Literal"
+        }) {
+            return;
+        }
+        if symbols.any(val, |s| {
+            s == "typing.Annotated" || s == "typing_extensions.Annotated"
+        }) {
             let sl = child(n, "slice");
             let first = if kind(sl) == "Tuple" {
                 items(sl, "elts").first().unwrap_or(sl)
             } else {
                 sl
             };
-            out.extend(annotation_nodes(first, symbols));
-            return out;
+            visit_annotation_nodes(first, symbols, f);
+            return;
         }
     }
-    for c in children(n) {
-        out.extend(annotation_nodes(c, symbols))
-    }
-    out
+    for_each_child(n, |c| visit_annotation_nodes(c, symbols, f));
 }
-pub(super) fn check(file: &Source, w: &Workspace, out: &mut Vec<Finding>) {
+
+pub(super) fn check(file: &FileContext<'_>, policy: &Policy, out: &mut Vec<Finding>) {
     if !file.has_layer(&["core"]) {
         return;
     }
-    let parsed = parsed_annotations(file, "arg");
-    let (tree, syms) = match &parsed {
-        Some((tree, syms)) => (tree, syms),
-        None => (&file.tree, &file.symbols),
+    let parsed = parsed_annotations(file.tree, file.nodes, file.package, "arg");
+    let owned_nodes;
+    let (nodes, syms): (&[&Node], &symbols::Symbols) = match &parsed {
+        Some((tree, syms)) => {
+            owned_nodes = walk(tree);
+            (&owned_nodes, syms)
+        }
+        None => (file.nodes, file.symbols),
     };
-    for a in walk(tree) {
-        if kind(a) != "arg" || child(a, "annotation").is_null() {
+    let mut matched = BTreeSet::new();
+    for &a in nodes {
+        if kind(a) != "arg" {
             continue;
         }
-        let mut matched = BTreeSet::new();
-        for n in annotation_nodes(child(a, "annotation"), syms) {
-            let ns = symbols::names(syms, n);
-            if !ns.is_empty()
-                && ns.iter().all(|s| {
-                    EFFECTFUL.contains(&s.as_str()) || w.policy.effectful_types.contains(s)
+        let ann = child(a, "annotation");
+        if ann.is_null() {
+            continue;
+        }
+        matched.clear();
+        visit_annotation_nodes(ann, syms, &mut |n| {
+            if !syms.is_unknown(n)
+                && syms.all(n, |s| {
+                    EFFECTFUL.contains(&s) || policy.effectful_types.contains(s)
                 })
             {
-                matched.extend(ns)
+                syms.for_each(n, |s| {
+                    matched.insert(s.to_owned());
+                });
             }
-        }
+        });
         if !matched.is_empty() {
+            let joined = matched.iter().cloned().collect::<Vec<_>>().join(", ");
             add(
                 out,
                 file,
                 a,
                 "LIT207",
                 format!(
-                    "core parameter '{}' receives effectful capability {}; pass observed values and execute returned decisions in the shell",
+                    "core parameter '{}' receives effectful capability {joined}; pass observed values and execute returned decisions in the shell",
                     s(a, "arg"),
-                    joined(&matched)
                 ),
             );
         }

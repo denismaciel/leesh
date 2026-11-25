@@ -5,7 +5,7 @@ use crate::{
 };
 use rayon::prelude::*;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
 };
 #[derive(Default)]
@@ -18,10 +18,10 @@ pub fn key(f: &Finding) -> (String, String, String) {
     (f.filename.clone(), f.code.clone(), f.message.clone())
 }
 pub fn sort(findings: &mut Vec<Finding>) {
-    findings.sort();
+    findings.par_sort_unstable();
     findings.dedup();
 }
-pub fn run(w: &Workspace, selected: &[PathBuf], no_baseline: bool) -> Result {
+pub fn run(w: &mut Workspace, selected: &[PathBuf], no_baseline: bool) -> Result {
     let selected_path = |p: &Path| selected.is_empty() || selected.iter().any(|s| p.starts_with(s));
     let manifest = w
         .manifest
@@ -48,16 +48,36 @@ pub fn run(w: &Workspace, selected: &[PathBuf], no_baseline: bool) -> Result {
             });
         }
     }
-    let mut found: Vec<_> = w
+    // Precompute SCCs once before parallel file checks so workers never block on OnceLock.
+    crate::dependencies::precompute_sccs(w);
+    let cross_findings: Vec<Vec<Finding>> = w
         .sources
         .par_iter()
-        .filter(|s| selected_path(&s.path))
-        .flat_map_iter(|s| {
-            let mut f = crate::rules::check(s, w);
-            f.extend(crate::dependencies::check(s, w));
+        .enumerate()
+        .filter(|(_, s)| selected_path(&s.path))
+        .map(|(idx, s)| {
+            let mut f = Vec::new();
+            crate::rules::check_cross_file(idx, s, w, &mut f);
+            f.extend(crate::dependencies::check(idx, s, w));
             f
         })
         .collect();
+    let total_cap: usize = w
+        .sources
+        .iter()
+        .filter(|s| selected_path(&s.path))
+        .map(|s| s.local_findings.len())
+        .sum::<usize>()
+        + cross_findings.iter().map(Vec::len).sum::<usize>();
+    let mut found = Vec::with_capacity(total_cap);
+    for s in &mut w.sources {
+        if selected_path(&s.path) {
+            found.append(&mut s.local_findings);
+        }
+    }
+    for mut chunk in cross_findings {
+        found.append(&mut chunk);
+    }
     sort(&mut found);
     let mut ignores = Vec::new();
     for ignore in &w.ignores {
@@ -78,36 +98,77 @@ pub fn run(w: &Workspace, selected: &[PathBuf], no_baseline: bool) -> Result {
         }
         ignores.push((ignore, codes));
     }
-    let mut used = BTreeSet::new();
+    let layer_by_filename: HashMap<&str, &str> =
+        if ignores.iter().any(|(i, _)| !i.layers.is_empty()) {
+            w.sources
+                .iter()
+                .filter_map(|s| {
+                    s.classification
+                        .as_ref()
+                        .map(|c| (s.filename.as_str(), c.name.as_str()))
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
+    let mut used: BTreeMap<usize, usize> = BTreeMap::new();
     let mut kept = Vec::new();
     let mut ignored = Vec::new();
-    for f in found {
-        let matched = ignores.iter().position(|(i, codes)| {
-            codes.contains(&f.code)
-                && (i.paths.is_empty() || i.paths.iter().any(|p| matches_glob(&f.filename, p)))
-                && (i.layers.is_empty()
-                    || w.classify(&w.root.join(&f.filename))
-                        .is_some_and(|c| w.policy.is_a(&c.name, &i.layers)))
-        });
-        if let Some(i) = matched {
-            used.insert(i);
-            ignored.push(f);
-        } else {
-            kept.push(f);
+    if ignores.is_empty() {
+        kept = found;
+    } else {
+        for f in found {
+            let matched = ignores.iter().position(|(i, codes)| {
+                codes.contains(&f.code)
+                    && (i.paths.is_empty() || i.paths.iter().any(|p| matches_glob(&f.filename, p)))
+                    && (i.layers.is_empty()
+                        || layer_by_filename
+                            .get(f.filename.as_str())
+                            .is_some_and(|layer| w.policy.is_a(layer, &i.layers)))
+            });
+            if let Some(i) = matched {
+                *used.entry(i).or_default() += 1;
+                ignored.push(f);
+            } else {
+                kept.push(f);
+            }
         }
     }
+    let describe = |i: &crate::workspace::Ignore| {
+        let mut scope = i.paths.clone();
+        scope.extend(i.layers.iter().cloned());
+        if scope.is_empty() {
+            i.rules.join(", ")
+        } else {
+            format!("{} in {}", i.rules.join(", "), scope.join(", "))
+        }
+    };
     if selected.is_empty() {
         for (index, (i, codes)) in ignores.iter().enumerate() {
-            if !used.contains(&index) && !codes.is_empty() {
-                let mut scope = i.paths.clone();
-                scope.extend(i.layers.iter().cloned());
-                let description = if scope.is_empty() {
-                    i.rules.join(", ")
-                } else {
-                    format!("{} in {}", i.rules.join(", "), scope.join(", "))
-                };
-                problems.push(problem(format!("ignore suppresses nothing: {description}")));
+            let count = used.get(&index).copied().unwrap_or(0);
+            if count == 0 && !codes.is_empty() {
+                problems.push(problem(format!(
+                    "ignore suppresses nothing: {}",
+                    describe(i)
+                )));
+            } else if let Some(max_count) = i.max_count
+                && count > max_count
+            {
+                problems.push(problem(format!(
+                    "ignore max_count exceeded for {}: suppressed {count}, max_count is {max_count}",
+                    describe(i)
+                )));
             }
+        }
+    }
+    for i in &w.ignores {
+        if let Some(review_by) = &i.review_by
+            && review_by.as_str() < w.today.as_str()
+        {
+            problems.push(problem(format!(
+                "ignore review_by {review_by} has expired: {}",
+                describe(i)
+            )));
         }
     }
     let mut baselined = Vec::new();
@@ -128,8 +189,26 @@ pub fn run(w: &Workspace, selected: &[PathBuf], no_baseline: bool) -> Result {
             .map(|(_, n)| n)
             .sum();
         if stale > 0 {
-            problems.push(Finding {filename:relative_name(baseline_path,&w.root),line:1,column:0,code:"LIT003".into(),message:format!("{stale} baseline {} no longer {} a finding; run `leesh baseline --prune` to shrink the baseline",if stale==1{"entry"}else{"entries"},if stale==1{"matches"}else{"match"}),target:None});
+            problems.push(Finding {
+                filename: relative_name(baseline_path, &w.root),
+                line: 1,
+                column: 0,
+                code: "LIT003".into(),
+                message: format!(
+                    "{stale} baseline {} no longer {} a finding; run `leesh baseline --prune` to shrink the baseline",
+                    if stale == 1 { "entry" } else { "entries" },
+                    if stale == 1 { "matches" } else { "match" }
+                ),
+                target: None,
+            });
         }
+    } else if problems.is_empty() {
+        // `kept` is already sorted & deduplicated when no problems are merged in.
+        return Result {
+            findings: kept,
+            baselined,
+            ignored,
+        };
     } else {
         problems.extend(kept);
     }

@@ -84,12 +84,21 @@ enum Command {
 fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
-fn load(root: Option<PathBuf>, format: &str) -> Result<workspace::Workspace, ()> {
+fn load_with(
+    root: Option<PathBuf>,
+    format: &str,
+    parse_files: bool,
+) -> Result<workspace::Workspace, ()> {
     let root = root.map_or_else(
         || workspace::find_root(&std::env::current_dir().unwrap()),
         |p| absolute(&p),
     );
-    match workspace::load(&root) {
+    let loaded = if parse_files {
+        workspace::load(&root)
+    } else {
+        workspace::load_metadata(&root)
+    };
+    match loaded {
         Ok(w) => Ok(w),
         Err(message) => {
             let p = Finding {
@@ -109,6 +118,9 @@ fn load(root: Option<PathBuf>, format: &str) -> Result<workspace::Workspace, ()>
             Err(())
         }
     }
+}
+fn load(root: Option<PathBuf>, format: &str) -> Result<workspace::Workspace, ()> {
+    load_with(root, format, true)
 }
 fn selected(paths: &[PathBuf], root: &Path) -> Result<Vec<PathBuf>, String> {
     paths
@@ -150,25 +162,25 @@ fn execute(command: Command) -> Result<u8, String> {
             no_baseline,
         } => {
             set_jobs(jobs)?;
-            let Ok(w) = load(root, &format) else {
+            let Ok(mut w) = load(root, &format) else {
                 return Ok(2);
             };
             let paths = selected(&paths, &w.root)?;
-            let result = engine::run(&w, &paths, no_baseline);
+            let result = engine::run(&mut w, &paths, no_baseline);
             let totals = reporting::Summary {
                 packages: w.packages.len(),
                 files: w.sources.len() + w.parse_failures.len(),
                 baselined: result.baselined.len(),
                 ignored: result.ignored.len(),
             };
-            let output = reporting::report(&result.findings, Some(&totals), &format);
-            if !output.is_empty() {
-                println!("{output}")
-            };
-            let exit_code = u8::from(!result.findings.is_empty());
             let drop_span = leesh_rust::profile::span("workspace_drop");
             drop(w);
             drop(drop_span);
+            let stdout = std::io::stdout();
+            let writer = std::io::BufWriter::with_capacity(64 * 1024, stdout.lock());
+            reporting::write_report(&result.findings, Some(&totals), &format, writer)
+                .map_err(|e| e.to_string())?;
+            let exit_code = u8::from(!result.findings.is_empty());
             Ok(exit_code)
         }
         Command::Report {
@@ -181,7 +193,7 @@ fn execute(command: Command) -> Result<u8, String> {
             jobs,
         } => {
             set_jobs(jobs)?;
-            let Ok(w) = load(root, &format) else {
+            let Ok(mut w) = load(root, &format) else {
                 return Ok(2);
             };
             let paths = selected(&paths, &w.root)?;
@@ -194,7 +206,7 @@ fn execute(command: Command) -> Result<u8, String> {
                 })
                 .collect();
             let codes = codes?;
-            let mut result = engine::run(&w, &paths, false);
+            let mut result = engine::run(&mut w, &paths, false);
             if !codes.is_empty() {
                 result.findings.retain(|f| codes.contains(&f.code));
                 result.baselined.retain(|f| codes.contains(&f.code));
@@ -211,16 +223,16 @@ fn execute(command: Command) -> Result<u8, String> {
         }
         Command::Baseline { root, prune, jobs } => {
             set_jobs(jobs)?;
-            let Ok(w) = load(root, "text") else {
+            let Ok(mut w) = load(root, "text") else {
                 return Ok(2);
             };
-            let Some(path) = &w.baseline_path else {
+            let Some(path) = w.baseline_path.clone() else {
                 return Err(
                     "set workspace.baseline in leesh.toml, e.g. baseline = \"leesh-baseline.json\""
                         .into(),
                 );
             };
-            let result = engine::run(&w, &[], true);
+            let result = engine::run(&mut w, &[], true);
             let mut actual = BTreeMap::new();
             let mut problems = Vec::new();
             for f in result.findings {
@@ -238,7 +250,7 @@ fn execute(command: Command) -> Result<u8, String> {
             } else {
                 actual
             };
-            std::fs::write(path, native_newlines(render_baseline(&counts)))
+            std::fs::write(&path, native_newlines(render_baseline(&counts)))
                 .map_err(|e| e.to_string())?;
             let recorded: usize = counts.values().sum();
             let files = counts
@@ -249,7 +261,7 @@ fn execute(command: Command) -> Result<u8, String> {
                 .len();
             println!(
                 "wrote {}: {recorded} findings in {files} files (was {})",
-                relative_name(path, &w.root),
+                relative_name(&path, &w.root),
                 w.baseline.values().sum::<usize>()
             );
             if !problems.is_empty() {
@@ -260,7 +272,7 @@ fn execute(command: Command) -> Result<u8, String> {
             }
         }
         Command::Classify { paths, root } => {
-            let Ok(w) = load(root, "text") else {
+            let Ok(w) = load_with(root, "text", false) else {
                 return Ok(2);
             };
             let paths = selected(&paths, &w.root)?;
@@ -311,7 +323,7 @@ fn execute(command: Command) -> Result<u8, String> {
         }
         Command::Rules { format } => {
             if format == "markdown" {
-                print!("{}", include_str!("../../docs/rules.md"));
+                print!("{}", reporting::rule_reference());
             } else {
                 for r in reporting::registry() {
                     println!(

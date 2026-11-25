@@ -1,8 +1,8 @@
 # Native leesh
 
-Standalone Rust implementation of leesh's 24 registered rules and seven CLI
+Standalone Rust implementation of leesh's rules and seven CLI
 commands. The Python distribution bundles this executable and invokes it from
-`leesh` and `python -m leesh`. The Python implementation remains the reference.
+`leesh` and `python -m leesh`.
 
 ```sh
 # Rust >= 1.97, a C compiler and make (jemalloc); validated with Rust 1.99
@@ -51,15 +51,11 @@ uv sync --locked
 cargo test --locked --release --manifest-path rust/Cargo.toml
 cargo clippy --locked --release --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 cargo fmt --manifest-path rust/Cargo.toml --check
-uv run python -m pytest -p benchmarks.differential_plugin
-uv run python benchmarks/compare.py --project requests --project flask --runs 5 --jobs 1 4
+uv run pytest
 ```
 
-The differential pytest plugin runs the existing Python fixtures and compares
-native findings, summaries, exit statuses, manifest validation errors, and
-non-mutating CLI output. In-memory Python snapshot tests remain Python-only;
-they aren't representable by a filesystem CLI invocation. Separate native CLI
-tests compare initialization, baseline creation/pruning, and all check formats.
+The pytest suite runs behavioral, manifest, CLI, packaging, and launcher checks
+directly against the compiled Rust binary.
 
 The project benchmark requires complete JSON and exit-status equality before
 recording timing, and checks every timed invocation again. See
