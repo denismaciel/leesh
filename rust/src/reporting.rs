@@ -39,6 +39,11 @@ const FAMILIES: &[(&str, &str, &str)] = &[
         "Conventions",
         "Naming that keeps decisions explicit. Configurable.",
     ),
+    (
+        "5",
+        "Dead code",
+        "Static analyzability and unreachable modules, symbols, members, and statements (opt-in via `workspace.dead_code`).",
+    ),
 ];
 pub fn rule_reference() -> String {
     let rules = registry();

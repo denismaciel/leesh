@@ -37,6 +37,14 @@
 | [LIT404](#lit404) | `core-classes` | Core code defines plain behavior classes, or (in strict mode) methods on records. |
 | [LIT405](#lit405) | `core-exceptions` | Core code raises exceptions outside `__post_init__` (opt-in via `workspace.strict`). |
 | [LIT406](#lit406) | `explicit-arguments` | Public core/port signatures or records define defaults (opt-in via `workspace.strict`). |
+| [LIT501](#lit501) | `opaque-dispatch` | Non-boundary code uses dynamic lookup or reflection that defeats static reachability (opt-in via `workspace.dead_code`). |
+| [LIT502](#lit502) | `opaque-exports` | Code uses wildcard imports or a non-static `__all__` (opt-in via `workspace.dead_code`). |
+| [LIT503](#lit503) | `untyped-receiver` | A parameter whose attributes or methods are accessed lacks a type annotation (opt-in via `workspace.dead_code`). |
+| [LIT510](#lit510) | `dead-module` | A workspace module is unreachable from any entrypoint (opt-in via `workspace.dead_code`). |
+| [LIT511](#lit511) | `dead-symbol` | A top-level function, class, type alias, constant, or internal re-export is unreachable (opt-in via `workspace.dead_code`). |
+| [LIT512](#lit512) | `dead-member` | A class method, property, Protocol method, or pure core dataclass field is unused (opt-in via `workspace.dead_code`). |
+| [LIT513](#lit513) | `unreachable-code` | Statements or branches can never execute (opt-in via `workspace.dead_code`). |
+| [LIT514](#lit514) | `unused-parameter` | A function or method parameter is never read in its body (opt-in via `workspace.dead_code`). |
 
 ## Workspace
 
@@ -426,3 +434,55 @@ every argument on public core and port functions and every core/port record
 field explicitly. Private helpers, lambdas, Protocol methods, exception
 `__init__` methods, `ClassVar` attributes, and `field(init=False)` fields
 are exempt.
+
+## Dead code
+
+Static analyzability and unreachable modules, symbols, members, and statements (opt-in via `workspace.dead_code`).
+
+### LIT501
+
+`opaque-dispatch`: Non-boundary code uses dynamic lookup or reflection that defeats static reachability (opt-in via `workspace.dead_code`).
+
+Enabled with `workspace.dead_code = true` (or `--dead-code`). Outside `boundary` and `test` modules (and in addition to `LIT208` in `core`/`port`), forbids `eval`, `exec`, `compile`, `globals`, `locals`, `vars`, `__dict__`, `setattr`, `delattr`, dynamic `getattr(obj, non_literal)`, `importlib.import_module`, `__import__`, `importlib.reload`, `inspect.getmembers`, and module-level `__getattr__` / `__dir__`. Move genuine plugin or framework reflection to a `boundary` module so reachability stays deterministic.
+
+### LIT502
+
+`opaque-exports`: Code uses wildcard imports or a non-static `__all__` (opt-in via `workspace.dead_code`).
+
+Enabled with `workspace.dead_code = true` (or `--dead-code`). Star imports (`from mod import *`) and dynamically constructed `__all__` lists obscure which symbols a module imports or exports. Import names explicitly and define `__all__` as a static list or tuple of string literals.
+
+### LIT503
+
+`untyped-receiver`: A parameter whose attributes or methods are accessed lacks a type annotation (opt-in via `workspace.dead_code`).
+
+Enabled with `workspace.dead_code = true` (or `--dead-code`). In `shell`, `adapter`, and `router` modules, annotate parameters on which attributes or methods are accessed so method dispatch resolves statically without name-based guesswork.
+
+### LIT510
+
+`dead-module`: A workspace module is unreachable from any entrypoint (opt-in via `workspace.dead_code`).
+
+Enabled with `workspace.dead_code = true` (or `--dead-code`). Production modules must be reachable from production entrypoints (`pyproject.toml` scripts/entry-points, executable `boundary` entrypoints, `migrations/`, `scripts/`, `[dead_code].entrypoints`, or top-level package `__init__.py` for `library`/`client` packages). Test imports do not keep production modules alive; modules imported only by tests are reported explicitly. Unreferenced test helper modules are also reported.
+
+### LIT511
+
+`dead-symbol`: A top-level function, class, type alias, constant, or internal re-export is unreachable (opt-in via `workspace.dead_code`).
+
+Enabled with `workspace.dead_code = true` (or `--dead-code`). Reported inside reachable modules for definitions that have no path from any entrypoint, including mutually recursive dead islands, unused re-exports in internal `server` `__init__.py` files, and production symbols only referenced by tests.
+
+### LIT512
+
+`dead-member`: A class method, property, Protocol method, or pure core dataclass field is unused (opt-in via `workspace.dead_code`).
+
+Enabled with `workspace.dead_code = true` (or `--dead-code`). Reports unreferenced methods and properties on live classes, unused `Protocol` methods (and their adapter implementations), and write-only fields on internal `core` dataclasses that do not escape to serialization. Dunder hooks, Pydantic model fields/validators, SQLAlchemy mapped columns/relationships, registration-decorated methods, and public overrides of third-party base classes are exempt.
+
+### LIT513
+
+`unreachable-code`: Statements or branches can never execute (opt-in via `workspace.dead_code`).
+
+Enabled with `workspace.dead_code = true` (or `--dead-code`). Reports statements following unconditional `return`, `raise`, `break`, or `continue`, as well as constant-dead branches (`if False:`, `while False:`, unreachable `else` after `if True:` or an always-terminating `try` block).
+
+### LIT514
+
+`unused-parameter`: A function or method parameter is never read in its body (opt-in via `workspace.dead_code`).
+
+Enabled with `workspace.dead_code = true` (or `--dead-code`). Reported only when the function's signature is not constrained by an external contract: `self`/`cls`, `_`-prefixed names, `*args`/`**kwargs`, abstract/stub bodies, `Protocol` definitions and implementations, overrides, third-party base subclasses, registration-decorated handlers, and functions passed as callback values are exempt.

@@ -78,6 +78,15 @@ pub fn run(w: &mut Workspace, selected: &[PathBuf], no_baseline: bool) -> Result
     for mut chunk in cross_findings {
         found.append(&mut chunk);
     }
+    if w.dead_code {
+        let (dc_findings, dc_manifest_problems) = crate::dead_code::check(w);
+        problems.extend(dc_manifest_problems);
+        for f in dc_findings {
+            if selected_path(&w.root.join(&f.filename)) {
+                found.push(f);
+            }
+        }
+    }
     sort(&mut found);
     let mut ignores = Vec::new();
     for ignore in &w.ignores {

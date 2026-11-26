@@ -35,6 +35,10 @@ enum Command {
         jobs: Option<u16>,
         #[arg(long)]
         no_baseline: bool,
+        #[arg(long)]
+        dead_code: bool,
+        #[arg(long)]
+        entrypoint: Vec<String>,
     },
     Report {
         paths: Vec<PathBuf>,
@@ -50,6 +54,10 @@ enum Command {
         rule: Vec<String>,
         #[arg(long,value_parser=clap::value_parser!(u16).range(1..))]
         jobs: Option<u16>,
+        #[arg(long)]
+        dead_code: bool,
+        #[arg(long)]
+        entrypoint: Vec<String>,
     },
     Baseline {
         #[arg(long)]
@@ -58,6 +66,10 @@ enum Command {
         prune: bool,
         #[arg(long,value_parser=clap::value_parser!(u16).range(1..))]
         jobs: Option<u16>,
+        #[arg(long)]
+        dead_code: bool,
+        #[arg(long)]
+        entrypoint: Vec<String>,
     },
     Classify {
         #[arg(required = true)]
@@ -88,13 +100,15 @@ fn load_with(
     root: Option<PathBuf>,
     format: &str,
     parse_files: bool,
+    dead_code_override: Option<bool>,
+    extra_entrypoints: &[String],
 ) -> Result<workspace::Workspace, ()> {
     let root = root.map_or_else(
         || workspace::find_root(&std::env::current_dir().unwrap()),
         |p| absolute(&p),
     );
     let loaded = if parse_files {
-        workspace::load(&root)
+        workspace::load_with_options(&root, dead_code_override, extra_entrypoints)
     } else {
         workspace::load_metadata(&root)
     };
@@ -119,8 +133,19 @@ fn load_with(
         }
     }
 }
-fn load(root: Option<PathBuf>, format: &str) -> Result<workspace::Workspace, ()> {
-    load_with(root, format, true)
+fn load(
+    root: Option<PathBuf>,
+    format: &str,
+    dead_code: bool,
+    extra_entrypoints: &[String],
+) -> Result<workspace::Workspace, ()> {
+    load_with(
+        root,
+        format,
+        true,
+        dead_code.then_some(true),
+        extra_entrypoints,
+    )
 }
 fn selected(paths: &[PathBuf], root: &Path) -> Result<Vec<PathBuf>, String> {
     paths
@@ -160,9 +185,11 @@ fn execute(command: Command) -> Result<u8, String> {
             format,
             jobs,
             no_baseline,
+            dead_code,
+            entrypoint,
         } => {
             set_jobs(jobs)?;
-            let Ok(mut w) = load(root, &format) else {
+            let Ok(mut w) = load(root, &format, dead_code, &entrypoint) else {
                 return Ok(2);
             };
             let paths = selected(&paths, &w.root)?;
@@ -191,9 +218,11 @@ fn execute(command: Command) -> Result<u8, String> {
             depth,
             rule,
             jobs,
+            dead_code,
+            entrypoint,
         } => {
             set_jobs(jobs)?;
-            let Ok(mut w) = load(root, &format) else {
+            let Ok(mut w) = load(root, &format, dead_code, &entrypoint) else {
                 return Ok(2);
             };
             let paths = selected(&paths, &w.root)?;
@@ -221,9 +250,15 @@ fn execute(command: Command) -> Result<u8, String> {
             );
             Ok(0)
         }
-        Command::Baseline { root, prune, jobs } => {
+        Command::Baseline {
+            root,
+            prune,
+            jobs,
+            dead_code,
+            entrypoint,
+        } => {
             set_jobs(jobs)?;
-            let Ok(mut w) = load(root, "text") else {
+            let Ok(mut w) = load(root, "text", dead_code, &entrypoint) else {
                 return Ok(2);
             };
             let Some(path) = w.baseline_path.clone() else {
@@ -272,7 +307,7 @@ fn execute(command: Command) -> Result<u8, String> {
             }
         }
         Command::Classify { paths, root } => {
-            let Ok(w) = load_with(root, "text", false) else {
+            let Ok(w) = load_with(root, "text", false, None, &[]) else {
                 return Ok(2);
             };
             let paths = selected(&paths, &w.root)?;

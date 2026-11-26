@@ -1,6 +1,9 @@
 use crate::{
     ast::{self, Node, child, for_each_child, items, kind, s, walk},
-    model::{ClassCheck, DeferredLocal, FileContext, Finding, Source, TopDef, finding, finding_at},
+    model::{
+        ClassCheck, DeadCodeSummary, DeferredLocal, FileContext, Finding, Source, TopDef, finding,
+        finding_at,
+    },
     symbols,
     workspace::{Policy, Workspace},
 };
@@ -8,6 +11,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod ambient;
 mod capabilities;
+mod dead_code_local;
 mod defaults;
 mod effects;
 mod mutation;
@@ -53,9 +57,15 @@ pub struct LocalCheckOutput {
     pub deferred: DeferredLocal,
     pub top_defs: Box<[TopDef]>,
     pub classes: Box<[ClassCheck]>,
+    pub dead_code: Option<Box<DeadCodeSummary>>,
 }
 
-pub fn check_local(file: &FileContext<'_>, policy: &Policy, strict_mode: bool) -> LocalCheckOutput {
+pub fn check_local(
+    file: &FileContext<'_>,
+    policy: &Policy,
+    strict_mode: bool,
+    dead_code_mode: bool,
+) -> LocalCheckOutput {
     let _span = crate::profile::span("local_rules");
     let mut out = Vec::new();
     let mut deferred = DeferredLocal::default();
@@ -221,11 +231,21 @@ pub fn check_local(file: &FileContext<'_>, policy: &Policy, strict_mode: bool) -
         let _span = crate::profile::span("rule_strict");
         strict::check(file, policy, strict_mode, parsed_all.as_ref(), &mut out);
     }
+    let dead_code = if dead_code_mode {
+        Some(Box::new(dead_code_local::check_and_extract(
+            file,
+            parsed_all.as_ref(),
+            &mut out,
+        )))
+    } else {
+        None
+    };
     LocalCheckOutput {
         findings: out,
         deferred,
         top_defs,
         classes,
+        dead_code,
     }
 }
 

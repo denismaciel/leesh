@@ -103,6 +103,12 @@ pub struct Ignore {
     pub review_by: Option<String>,
     pub max_count: Option<usize>,
 }
+#[derive(Debug, Clone)]
+pub struct DeadCodeKeep {
+    pub symbols: Vec<String>,
+    pub reason: String,
+    pub review_by: Option<String>,
+}
 pub struct Workspace {
     init_closures: Box<[OnceLock<Box<[usize]>>]>,
     scc_cache: OnceLock<Vec<Option<u32>>>,
@@ -123,6 +129,11 @@ pub struct Workspace {
     pub override_budget: usize,
     pub dependency_override_budget: usize,
     pub strict: bool,
+    pub dead_code: bool,
+    pub dead_code_entrypoints: Vec<String>,
+    pub dead_code_keep: Vec<DeadCodeKeep>,
+    pub pyproject_entrypoints: Vec<String>,
+    pub pytest_plugins: Vec<String>,
     pub today: String,
 }
 pub fn matches_name<I, S>(name: &str, patterns: I) -> bool
@@ -1041,12 +1052,168 @@ impl Workspace {
                 self.dependency_override_budget
             ))
         }
+        for k in &self.dead_code_keep {
+            if let Some(review_by) = &k.review_by
+                && review_by.as_str() < self.today.as_str()
+            {
+                errors.push(format!(
+                    "dead_code.keep review_by {review_by} has expired: {}",
+                    k.symbols.join(", ")
+                ));
+            }
+        }
         errors.sort();
         errors
     }
 }
 
-fn load_impl(root: &Path, parse_files: bool) -> Result<Workspace, String> {
+fn extract_pyproject_entrypoints(pkg_root: &Path) -> Vec<String> {
+    let path = pkg_root.join("pyproject.toml");
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(doc) = toml::from_str::<toml::Value>(&text) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if let Some(bs) = doc.get("build-system").and_then(toml::Value::as_table)
+        && bs.get("backend-path").is_some()
+        && let Some(backend) = bs.get("build-backend").and_then(toml::Value::as_str)
+        && !backend.trim().is_empty()
+    {
+        let b = backend.trim();
+        out.push(b.to_owned());
+        if !b.contains(':') {
+            for hook in [
+                "build_wheel",
+                "build_editable",
+                "build_sdist",
+                "get_requires_for_build_wheel",
+                "get_requires_for_build_editable",
+                "get_requires_for_build_sdist",
+                "prepare_metadata_for_build_wheel",
+                "prepare_metadata_for_build_editable",
+            ] {
+                out.push(format!("{b}:{hook}"));
+            }
+        }
+    }
+    let Some(project) = doc.get("project").and_then(toml::Value::as_table) else {
+        return out;
+    };
+    for section in ["scripts", "gui-scripts"] {
+        if let Some(tbl) = project.get(section).and_then(toml::Value::as_table) {
+            for val in tbl.values() {
+                if let Some(s) = val.as_str()
+                    && !s.trim().is_empty()
+                {
+                    out.push(s.trim().to_owned());
+                }
+            }
+        }
+    }
+    if let Some(eps) = project.get("entry-points").and_then(toml::Value::as_table) {
+        for group in eps.values() {
+            if let Some(tbl) = group.as_table() {
+                for val in tbl.values() {
+                    if let Some(s) = val.as_str()
+                        && !s.trim().is_empty()
+                    {
+                        out.push(s.trim().to_owned());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn extract_pytest_plugins(pkg_root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut parse_addopts = |raw: &str| {
+        let tokens: Vec<&str> = raw.split_whitespace().collect();
+        let mut i = 0;
+        while i < tokens.len() {
+            if tokens[i] == "-p"
+                && let Some(next) = tokens.get(i + 1)
+                && !next.starts_with("no:")
+            {
+                out.push((*next).to_owned());
+                i += 2;
+                continue;
+            }
+            if let Some(rest) = tokens[i].strip_prefix("-p")
+                && !rest.is_empty()
+                && !rest.starts_with("no:")
+            {
+                out.push(rest.to_owned());
+            }
+            i += 1;
+        }
+    };
+    if let Ok(text) = std::fs::read_to_string(pkg_root.join("pytest.ini")) {
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("addopts")
+                && let Some((_, val)) = rest.split_once('=')
+            {
+                parse_addopts(val);
+            }
+        }
+    }
+    if let Ok(text) = std::fs::read_to_string(pkg_root.join("pyproject.toml"))
+        && let Ok(doc) = toml::from_str::<toml::Value>(&text)
+        && let Some(ini) = doc
+            .get("tool")
+            .and_then(|t| t.get("pytest"))
+            .and_then(|p| p.get("ini_options"))
+        && let Some(addopts) = ini.get("addopts")
+    {
+        if let Some(s) = addopts.as_str() {
+            parse_addopts(s);
+        } else if let Some(arr) = addopts.as_array() {
+            let joined = arr
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
+            parse_addopts(&joined);
+        }
+    }
+    out
+}
+
+fn validate_entrypoint_spec(spec: &str, field: &str) -> Result<String, String> {
+    let s = spec.trim();
+    if s.is_empty() {
+        return Err(format!("{field} must be a non-empty entrypoint spec"));
+    }
+    let (module_part, attr_part) = match s.split_once(':') {
+        Some((m, a)) => (m, Some(a)),
+        None => (s, None),
+    };
+    let mod_check = module_part.strip_suffix(".*").unwrap_or(module_part);
+    if mod_check.is_empty() || !mod_check.split('.').all(identifier) {
+        return Err(format!(
+            "{field} has invalid module spec '{s}'; expected module, module.*, or module:symbol"
+        ));
+    }
+    if let Some(a) = attr_part
+        && (a.is_empty() || !a.split('.').all(identifier))
+    {
+        return Err(format!(
+            "{field} has invalid symbol spec '{s}'; expected module:symbol"
+        ));
+    }
+    Ok(s.to_owned())
+}
+
+fn load_impl(
+    root: &Path,
+    parse_files: bool,
+    dead_code_override: Option<bool>,
+    extra_entrypoints: &[String],
+) -> Result<Workspace, String> {
     let _span = crate::profile::span("workspace_load");
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let manifest = root.join("leesh.toml");
@@ -1074,6 +1241,7 @@ fn load_impl(root: &Path, parse_files: bool) -> Result<Workspace, String> {
             "overrides",
             "dependency_overrides",
             "domains",
+            "dead_code",
         ],
         "manifest",
     )?;
@@ -1089,6 +1257,7 @@ fn load_impl(root: &Path, parse_files: bool) -> Result<Workspace, String> {
             "dependency_override_budget",
             "baseline",
             "strict",
+            "dead_code",
         ],
         "workspace",
     )?;
@@ -1096,6 +1265,37 @@ fn load_impl(root: &Path, parse_files: bool) -> Result<Workspace, String> {
         v.as_bool()
             .ok_or_else(|| "workspace.strict must be true or false".to_owned())
     })?;
+    let manifest_dead_code = w.get("dead_code").map_or(Ok(false), |v| {
+        v.as_bool()
+            .ok_or_else(|| "workspace.dead_code must be true or false".to_owned())
+    })?;
+    let dead_code = dead_code_override.unwrap_or(manifest_dead_code);
+    let dc = &raw["dead_code"];
+    keys(dc, &["entrypoints", "keep"], "dead_code")?;
+    let mut dead_code_entrypoints = Vec::new();
+    for ep in list(&dc["entrypoints"], "dead_code.entrypoints")? {
+        dead_code_entrypoints.push(validate_entrypoint_spec(&ep, "dead_code.entrypoints")?);
+    }
+    for ep in extra_entrypoints {
+        dead_code_entrypoints.push(validate_entrypoint_spec(ep, "--entrypoint")?);
+    }
+    let mut dead_code_keep = Vec::new();
+    for entry in tables(&dc["keep"], "dead_code.keep")? {
+        keys(entry, &["symbols", "reason", "review_by"], "dead_code.keep")?;
+        let raw_syms = strings(&entry["symbols"], "dead_code.keep.symbols")?;
+        if raw_syms.is_empty() {
+            return Err("dead_code.keep.symbols must name at least one symbol".into());
+        }
+        let mut symbols = Vec::with_capacity(raw_syms.len());
+        for sym in raw_syms {
+            symbols.push(validate_entrypoint_spec(&sym, "dead_code.keep.symbols")?);
+        }
+        dead_code_keep.push(DeadCodeKeep {
+            symbols,
+            reason: string(&entry["reason"], "dead_code.keep.reason")?,
+            review_by: iso_date(&entry["review_by"], "dead_code.keep.review_by")?,
+        });
+    }
     let mut projects = BTreeSet::new();
     let mut paths = BTreeSet::new();
     for entry in walkdir::WalkDir::new(&root).into_iter().filter_entry(|e| {
@@ -1419,6 +1619,22 @@ fn load_impl(root: &Path, parse_files: bool) -> Result<Workspace, String> {
             }
         }
     }
+    let pyproject_entrypoints: Vec<String> = if dead_code {
+        packages
+            .iter()
+            .flat_map(|p| extract_pyproject_entrypoints(&p.root))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let pytest_plugins: Vec<String> = if dead_code {
+        packages
+            .iter()
+            .flat_map(|p| extract_pytest_plugins(&p.root))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut ws = Workspace {
         module_index: HashMap::new(),
         defined_packages: HashSet::new(),
@@ -1442,6 +1658,11 @@ fn load_impl(root: &Path, parse_files: bool) -> Result<Workspace, String> {
             "workspace.dependency_override_budget",
         )?,
         strict,
+        dead_code,
+        dead_code_entrypoints,
+        dead_code_keep,
+        pyproject_entrypoints,
+        pytest_plugins,
         today: today_utc(),
     };
     let owned_paths: Vec<(PathBuf, usize)> = paths
@@ -1467,6 +1688,7 @@ fn load_impl(root: &Path, parse_files: bool) -> Result<Workspace, String> {
                 classes: Box::new([]),
                 deferred_local: Default::default(),
                 local_findings: Vec::new(),
+                dead_code: None,
             })
             .collect();
         return Ok(ws);
@@ -1527,7 +1749,7 @@ fn load_impl(root: &Path, parse_files: bool) -> Result<Workspace, String> {
                 nodes: &nodes,
                 symbols: &symbols,
             };
-            let local = rules::check_local(&ctx, &ws.policy, ws.strict);
+            let local = rules::check_local(&ctx, &ws.policy, ws.strict, ws.dead_code);
             // `tree`, `nodes`, and `symbols` drop right here at the end of the closure.
             Ok(Ok(Source {
                 path: path.clone(),
@@ -1544,6 +1766,7 @@ fn load_impl(root: &Path, parse_files: bool) -> Result<Workspace, String> {
                 classes: local.classes,
                 deferred_local: local.deferred,
                 local_findings: local.findings,
+                dead_code: local.dead_code,
             }))
         })
         .collect::<Result<_, String>>()?;
@@ -1573,11 +1796,19 @@ fn load_impl(root: &Path, parse_files: bool) -> Result<Workspace, String> {
 }
 
 pub fn load(root: &Path) -> Result<Workspace, String> {
-    load_impl(root, true)
+    load_impl(root, true, None, &[])
+}
+
+pub fn load_with_options(
+    root: &Path,
+    dead_code_override: Option<bool>,
+    extra_entrypoints: &[String],
+) -> Result<Workspace, String> {
+    load_impl(root, true, dead_code_override, extra_entrypoints)
 }
 
 pub fn load_metadata(root: &Path) -> Result<Workspace, String> {
-    load_impl(root, false)
+    load_impl(root, false, None, &[])
 }
 
 fn baseline_json_error(text: &str, error: serde_json::Error) -> String {

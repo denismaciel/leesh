@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.23.0
+
+### Dead-Code Analysis (Opt-In)
+
+Added deterministic, layer-aware dead-code and static-analyzability analysis,
+enabled via `[dead_code] enabled = true` in `leesh.toml` or `leesh check --dead-code`
+(with optional repeatable `--entrypoint <module_or_path>`).
+
+- **Static analyzability rules (`LIT501`–`LIT503`):**
+  - **LIT501 `opaque-dynamic-dispatch`:** Disallows dynamic `getattr`/`setattr`/`delattr`,
+    `eval`/`exec`/`compile`, `__import__`, `importlib.import_module`, `globals`/`locals`/`vars`,
+    `inspect.getmembers`, and `runpy.*` outside `boundary`/`router`/`test`/`integration_test`.
+  - **LIT502 `opaque-export`:** Disallows non-literal `__all__`, `__all__ += ...`,
+    and wildcard `from x import *` imports.
+  - **LIT503 `unregistered-decorator`:** Flags unknown decorators outside
+    `boundary`/`router`/`test`/`integration_test` unless listed in
+    `[dead_code].live_decorators` or `[dead_code].transparent_decorators`.
+- **Dead-code rules (`LIT510`–`LIT514`):**
+  - **LIT510 `unreachable-module`:** Flags production modules unreachable from
+    configured/discovered entrypoints and test helpers unreachable from any test.
+  - **LIT511 `unused-symbol`:** Flags unused top-level functions, classes, type
+    aliases, and module variables (including symbols referenced only by tests),
+    with PEP 695 `type_params` and `Literal[Enum.MEMBER]` tracking.
+  - **LIT512 `unused-member`:** Flags unused methods, properties, and `core`
+    dataclass fields using structural `Protocol` dispatch (no explicit
+    subclassing required) and class-scoped type propagation; exempts Pydantic/ORM
+    fields and `boundary`/`router` serialization contracts.
+  - **LIT513 `unreachable-code`:** Intra-procedural fall-through analysis after
+    `return`/`raise`/`break`/`continue`, unsatisfiable `if`/`while` branches,
+    and unreachable `try`/`while` `else` clauses (exempting the Python
+    `raise ...; yield ...` generator stub idiom).
+  - **LIT514 `unused-parameter`:** Flags unused function parameters (respecting
+    `_` prefixes, `Protocol`/`abstractmethod`/`@override` stubs, and lambdas).
+- **Configuration & CLI:**
+  - `[dead_code]` table in `leesh.toml` (`enabled`, `entrypoints`,
+    `live_decorators`, `transparent_decorators`, `ignore_names`, `test_only`,
+    `strict_members`).
+  - Automatic entrypoint discovery from `pyproject.toml` `[project.scripts]`,
+    `[project.gui-scripts]`, `[project.entry-points]`, pytest plugins, and
+    `__main__.py`.
+  - `leesh check --dead-code` and `--entrypoint` flags.
+
 ## 0.22.0
 
 ### Rules

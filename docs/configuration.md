@@ -17,6 +17,7 @@ findings.
 kind = "server"            # default kind for every package
 layout = "domains"         # default layout for every package
 strict = false             # opt-in strict rules (LIT309 unit-test adapter imports, LIT404 record methods, LIT405, LIT406)
+dead_code = false          # opt-in static analyzability & deterministic dead-code rules (LIT501-LIT514)
 override_budget = 0        # files that may use [[overrides]]
 dependency_override_budget = 0
 effectful_types = ["example.clock.Clock"]          # extends LIT207's catalog
@@ -256,3 +257,40 @@ match, until `leesh baseline --prune` drops them. `--prune` never adds
 entries, so the baseline only shrinks; `leesh check --no-baseline` shows
 everything. `leesh report` ranks the findings, new and baselined, by rule,
 layer edge, target and directory; `--rule LIT101` focuses it on one rule.
+
+## Dead code
+
+Set `workspace.dead_code = true` (or pass `--dead-code` to `check`, `report`,
+or `baseline`) to enable the `LIT5xx` static analyzability and deterministic
+dead-code rules.
+
+Production roots are discovered automatically from each package's
+`pyproject.toml` (`[project.scripts]`, `[project.gui-scripts]`,
+`[project.entry-points]`), top-level `__init__.py` exports for `library` and
+`client` packages, `migrations/**`, `scripts/**`, `examples/**`,
+`__main__.py`, executable `boundary` entry modules (`main.py`, `asgi.py`,
+`wsgi.py`, `cli.py`, `worker.py`, `server.py`, `app.py`, `scheduler.py`), and
+modules with `if __name__ == "__main__":`. Test roots come from pytest files
+(`test_*.py`, `*_test.py`, `conftest.py`) and pytest plugins declared via
+`pytest_plugins` or `-p` in `pytest.ini` / `pyproject.toml`.
+
+Declare additional runtime entrypoints (such as ASGI apps or dynamically
+loaded plugin modules) or explicit keep-list symbols in `[dead_code]`. Entries
+that match no workspace module or symbol, or whose `review_by` date has passed,
+are reported as `LIT003`:
+
+```toml
+[workspace]
+dead_code = true
+
+[dead_code]
+entrypoints = [
+  "example.app.asgi:application",
+  "example.plugins.*:PLUGIN",
+]
+
+[[dead_code.keep]]
+symbols = ["example.app.tasks:nightly_cleanup"]
+reason = "Invoked by systemd timer outside Python"
+review_by = "2027-01-01"
+```

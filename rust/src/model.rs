@@ -118,6 +118,127 @@ pub struct DeferredLocal {
     pub lit304: Vec<Lit304Candidate>,
 }
 
+/// Kind of definition tracked by deterministic dead-code analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeadDefKind {
+    Function,
+    Class,
+    Variable,
+    TypeAlias,
+    Reexport,
+    Method,
+    Property,
+    Field,
+    Param,
+}
+
+/// Bitflags describing semantic roles of a definition for dead-code analysis.
+pub mod def_flags {
+    pub const HAS_REG_DECORATOR: u16 = 1 << 0;
+    pub const IS_PROTOCOL: u16 = 1 << 1;
+    pub const IS_DATACLASS: u16 = 1 << 2;
+    pub const IS_NAMED_TUPLE: u16 = 1 << 3;
+    pub const IS_ENUM: u16 = 1 << 4;
+    pub const IS_TYPED_DICT: u16 = 1 << 5;
+    pub const IS_PYDANTIC: u16 = 1 << 6;
+    pub const IS_ORM: u16 = 1 << 7;
+    pub const IS_EXCEPTION: u16 = 1 << 8;
+    pub const IS_STUB_BODY: u16 = 1 << 9;
+    pub const IS_OVERRIDE: u16 = 1 << 10;
+    pub const IS_OVERLOAD: u16 = 1 << 11;
+    pub const IS_STATIC_OR_CLASSMETHOD: u16 = 1 << 12;
+    pub const IS_PYTEST_FIXTURE: u16 = 1 << 13;
+    pub const IS_PYDANTIC_HOOK: u16 = 1 << 14;
+    pub const IS_ORM_HOOK: u16 = 1 << 15;
+}
+
+pub type ParamTypeEntry = (Box<str>, Box<[Box<str>]>);
+
+/// Compact summary of one definition inside a file.
+/// Local index `0` is always reserved for `MODULE_INIT` (top-level execution).
+#[derive(Debug, Clone)]
+pub struct DeadDef {
+    pub local_id: u32,
+    pub parent_id: u32,
+    pub name: Box<str>,
+    pub kind: DeadDefKind,
+    pub line: u32,
+    pub column: u32,
+    pub flags: u16,
+    /// For `Reexport`, the qualified target `module.symbol` (or `module`).
+    pub reexport_target: Option<Box<str>>,
+    /// For `Function` / `Method` / `Property`, the resolved return type(s) if annotated.
+    pub return_types: Box<[Box<str>]>,
+    /// For `Variable` / `TypeAlias` / `Field`, resolved direct value/annotation type(s).
+    pub value_types: Box<[Box<str>]>,
+    /// For `Variable` / `Field` / `Function` / `Method` / `Property`, container element type(s) (e.g. `dict[K, V]` -> `V`, `list[T]` -> `T`).
+    pub elem_types: Box<[Box<str>]>,
+    /// For `Class`, resolved base class qualified names (or local class names prefixed with `@`).
+    pub bases: Box<[Box<str>]>,
+    /// For `Function` / `Method`, parameter `(name, type_names)` in positional order (excluding self/cls).
+    pub param_types: Box<[ParamTypeEntry]>,
+}
+
+/// A directed reference edge from an owning definition (`owner_id`, `0` = module init).
+#[derive(Debug, Clone)]
+pub struct DeadRef {
+    pub owner_id: u32,
+    /// Resolved qualified name (`mod.sym`) or `@local_name` for same-module top-level symbols.
+    pub target: Box<str>,
+    /// True if referenced as a bare value (outside `Call.func`, base class, or annotation),
+    /// meaning it may be passed as a callback whose signature is externally constrained.
+    pub as_value: bool,
+}
+
+/// An attribute/method access on a receiver inside `owner_id`.
+#[derive(Debug, Clone)]
+pub struct AttrRead {
+    pub owner_id: u32,
+    /// Resolved receiver type(s) (`mod.Class` or `@LocalClass`), empty if receiver type is unknown.
+    pub receiver_types: Box<[Box<str>]>,
+    pub attr: Box<str>,
+    pub is_super: bool,
+}
+
+/// A wiring edge observed at a call or assignment site: concrete type flows into target type.
+#[derive(Debug, Clone)]
+pub struct TypeFlow {
+    pub owner_id: u32,
+    pub from_type: Box<str>,
+    pub to_type: Box<str>,
+}
+
+/// Instance attribute type recorded on `self.<attr>` inside `__init__`.
+#[derive(Debug, Clone)]
+pub struct InitFieldType {
+    pub class_local_id: u32,
+    pub attr: Box<str>,
+    pub direct_types: Box<[Box<str>]>,
+    pub elem_types: Box<[Box<str>]>,
+}
+
+/// Compact per-file dead-code summary extracted while AST & Symbols are alive.
+#[derive(Debug, Clone, Default)]
+pub struct DeadCodeSummary {
+    pub defs: Box<[DeadDef]>,
+    pub refs: Box<[DeadRef]>,
+    pub attr_reads: Box<[AttrRead]>,
+    pub type_flows: Box<[TypeFlow]>,
+    pub init_fields: Box<[InitFieldType]>,
+    /// Types whose fields escape to serialization (`asdict`, `TypeAdapter`, boundary return, etc.).
+    pub escaped_types: Box<[Box<str>]>,
+    /// Local parameter `local_id`s that were read at least once in their owning function body.
+    pub read_params: Box<[u32]>,
+    /// Static `__all__` entries if defined as a literal list/tuple of strings.
+    pub static_all: Option<Box<[Box<str>]>>,
+    /// Static `pytest_plugins` module names declared in `conftest.py`.
+    pub pytest_plugins: Box<[Box<str>]>,
+    /// True if module has `if __name__ == "__main__":`.
+    pub has_main_guard: bool,
+    /// True if module has any top-level `Import` / `ImportFrom` with `pytest` or fixture usage.
+    pub is_conftest: bool,
+}
+
 /// Lightweight per-file summary retained in `Workspace` after dropping full AST & Symbols.
 #[derive(Debug, Clone)]
 pub struct Source {
@@ -135,6 +256,7 @@ pub struct Source {
     pub classes: Box<[ClassCheck]>,
     pub deferred_local: DeferredLocal,
     pub local_findings: Vec<Finding>,
+    pub dead_code: Option<Box<DeadCodeSummary>>,
 }
 
 impl Source {

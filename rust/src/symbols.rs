@@ -676,6 +676,12 @@ impl<'a, 'r> Resolver<'a, 'r> {
                 param_annotations.push((s(variadic, "arg"), self.names(ann)));
             }
         }
+        if !is_lambda {
+            let ret = child(node, "returns");
+            if !ret.is_null() {
+                self.visit(ret);
+            }
+        }
         let parent_rc = self
             .function_parent
             .clone()

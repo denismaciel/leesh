@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod dead_code;
 pub mod dependencies;
 pub mod engine;
 pub mod model;
