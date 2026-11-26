@@ -1,14 +1,14 @@
 {
-  "version": "0.22.0",
-  "rust_tree": "761f53a094cb48d178bb30d353f3d0e71e6ef4e1",
+  "version": "0.23.0",
+  "rust_tree": "b23287c9c1c47e3c3df59b6afcf0a3f4d0bd76b8",
   "workflow_runs": [
-    45584250207
+    45821362071
   ],
   "sha256": {
-    "leesh-rust-x86_64-unknown-linux-musl": "f21d33a07c4e36519be5eea6edacc763705a886b61bad9adfcadcbbf3020f28f",
-    "leesh-rust-aarch64-unknown-linux-musl": "05969cf4eeebdf105e302dfba57ef10df531ce5a4379ec67ce9667e1695868a0",
-    "leesh-rust-x86_64-apple-darwin": "7a74839af240690f6d25474fac8c00698c6ae83b20a17588e427322b8f28a3e8",
-    "leesh-rust-aarch64-apple-darwin": "96399b19ae8ade9dfe7a5885320bc9bbb30a4671e82529d1ab5fd978f3226ebb",
-    "leesh-rust-x86_64-pc-windows-msvc.exe": "ef534ca56676021399dfa87d07985399e01b87b5ded893925939f47d1ce768b9"
+    "leesh-rust-x86_64-unknown-linux-musl": "1b14988287a4dcbf1e73abb9bcf06c10606f3471eb2a90ad71bf533f1d5e171c",
+    "leesh-rust-aarch64-unknown-linux-musl": "ec48fa51b3f499976a753ca1b51b8aa5d5cec262602161e7be9cd199fbb7da52",
+    "leesh-rust-x86_64-apple-darwin": "c4bce221ab62c2f04fc1ba9e9bffd14e73cd2373875e302e612a5aaefda6af23",
+    "leesh-rust-aarch64-apple-darwin": "85ee2a984b68b7f01d05ef55211c4258cb84e06a01e3ad61d58f1a0148cf7004",
+    "leesh-rust-x86_64-pc-windows-msvc.exe": "93f60a4f93590a6cd07e3bfd15b5916e8390c9c2dee4f7cb720a45fb70119997"
   }
 }
