@@ -41,7 +41,7 @@ jobs:
           python-version: "3.12"
       - name: Install Rust
         shell: bash
-        run: rustup toolchain install 1.99.0 --profile minimal --target ${{ matrix.target }}
+        run: rustup toolchain install 1.100.0 --profile minimal --target ${{ matrix.target }}
       - name: Install musl compiler
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
@@ -57,7 +57,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             export RUSTFLAGS="-C target-feature=+crt-static"
           fi
-          cargo +1.99.0 build --locked --release --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
+          cargo +1.100.0 build --locked --release --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
       - name: Smoke test and stage executable
         shell: bash
         env:

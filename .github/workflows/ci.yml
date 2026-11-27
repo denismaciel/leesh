@@ -79,15 +79,15 @@ jobs:
           version: "0.12.4"
           enable-cache: false
           python-version: "3.14"
-      - run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt,clippy --target x86_64-unknown-linux-musl
-      - run: cargo +1.99.0 fmt --manifest-path rust/Cargo.toml --check
-      - run: cargo +1.99.0 clippy --locked --release --manifest-path rust/Cargo.toml --all-targets -- -D warnings
-      - run: cargo +1.99.0 test --locked --release --manifest-path rust/Cargo.toml
-      - run: cargo +1.99.0 build --locked --release --manifest-path rust/Cargo.toml
+      - run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt,clippy --target x86_64-unknown-linux-musl
+      - run: cargo +1.100.0 fmt --manifest-path rust/Cargo.toml --check
+      - run: cargo +1.100.0 clippy --locked --release --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+      - run: cargo +1.100.0 test --locked --release --manifest-path rust/Cargo.toml
+      - run: cargo +1.100.0 build --locked --release --manifest-path rust/Cargo.toml
       - name: Build portable executable for Python distributions
         run: |
           sudo apt-get update && sudo apt-get install -y musl-tools
-          CC=musl-gcc CFLAGS="-O2 -std=gnu11" cargo +1.99.0 build --locked --release --manifest-path rust/Cargo.toml --target x86_64-unknown-linux-musl
+          CC=musl-gcc CFLAGS="-O2 -std=gnu11" cargo +1.100.0 build --locked --release --manifest-path rust/Cargo.toml --target x86_64-unknown-linux-musl
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ci-native
