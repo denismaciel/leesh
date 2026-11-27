@@ -22,8 +22,7 @@ need no download. No runtime fallback or runtime network access is used.
    build inputs. Fork, pull-request, other-branch, dirty-input and divergent runs fail.
    Do not rebuild Rust after this step without replacing the manifest and artifacts.
    Regenerate `THIRD_PARTY_NOTICES.txt` with `uv run python scripts/generate_notices.py`
-   when changing dependencies or the Rust toolchain, updating pinned runtime notices
-   when needed.
+   when changing dependencies or the Rust toolchain.
 4. Build each wheel from the final checkout using `LEESH_NATIVE_BINARY` and
    `LEESH_NATIVE_TARGET` for the matching downloaded executable. Build the sdist
    from that same checkout. Verify metadata, embedded executables, notices, and

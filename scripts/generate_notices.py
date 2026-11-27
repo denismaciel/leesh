@@ -1,51 +1,61 @@
-"""Generate notices from locked Cargo sources: uv run python scripts/generate_notices.py.
+"""Generate THIRD_PARTY_NOTICES.txt from locked Cargo sources and upstream runtime notices.
+
+Usage: uv run python scripts/generate_notices.py
 
 Run `cargo fetch --locked --manifest-path rust/Cargo.toml` first if needed.
-Generation itself is offline and includes all resolved targets/build dependencies.
+Fetches upstream runtime notices (Rust std, musl) and any unbundled upstream
+crate licenses on demand so vendored license blobs do not need to live in Git.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
-from html.parser import HTMLParser
+import tomllib
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RUFF_COMMIT = "ba65abf8ba7bfbcc059f7fb9712be5ba9cab6abc"
-RUFF_URL = f"https://raw.githubusercontent.com/astral-sh/ruff/{RUFF_COMMIT}/LICENSE"
 LICENSE_PREFIXES = ("license", "licence", "copying", "notice", "copyright")
+MUSL_VERSION = "v1.2.5"
 
 
-class LicenseText(HTMLParser):
-    """Keep all text, including licenses inside closed HTML details elements."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-
-    def handle_data(self, data: str) -> None:
-        self.parts.append(data)
+def fetch_text(url: str) -> str:
+    with urllib.request.urlopen(url, timeout=30) as response:
+        return response.read().decode("utf-8")
 
 
-def add_runtime_notices(notices: dict[str, list[str]]) -> None:
-    directory = ROOT / "scripts/licenses"
-    manifest = json.loads((directory / "runtime-sources.json").read_text())
-    for filename, provenance in manifest["files"].items():
-        data = (directory / filename).read_bytes()
-        if hashlib.sha256(data).hexdigest() != provenance["sha256"]:
-            raise RuntimeError(f"Runtime license snapshot checksum mismatch: {filename}")
-        text = data.decode()
-        if filename.endswith(".html"):
-            parser = LicenseText()
-            parser.feed(text)
-            parser.close()
-            text = "".join(parser.parts)
-        notices.setdefault(text, []).append(f"{filename}: {provenance['source']}")
+def rust_version() -> str:
+    toolchain = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())
+    return str(toolchain["toolchain"]["channel"])
+
+
+def add_runtime_notices(notices: dict[str, list[str]], rust_ver: str) -> None:
+    sources = [
+        (
+            f"rust-{rust_ver}-COPYRIGHT",
+            f"https://raw.githubusercontent.com/rust-lang/rust/{rust_ver}/COPYRIGHT",
+        ),
+        (
+            f"rust-{rust_ver}-LICENSE-MIT",
+            f"https://raw.githubusercontent.com/rust-lang/rust/{rust_ver}/LICENSE-MIT",
+        ),
+        (
+            f"rust-{rust_ver}-LICENSE-APACHE",
+            f"https://raw.githubusercontent.com/rust-lang/rust/{rust_ver}/LICENSE-APACHE",
+        ),
+        (
+            f"musl-{MUSL_VERSION}-COPYRIGHT",
+            f"https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT?h={MUSL_VERSION}",
+        ),
+    ]
+    for name, url in sources:
+        text = fetch_text(url)
+        notices.setdefault(text, []).append(f"{name}: {url}")
 
 
 def main() -> None:
+    rust_ver = rust_version()
     metadata = json.loads(
         subprocess.check_output(
             [
@@ -66,6 +76,7 @@ def main() -> None:
         key=lambda package: (package["name"], package["version"]),
     )
     notices: dict[str, list[str]] = {}
+    fetched_cache: dict[str, str] = {}
     index = []
     for package in packages:
         label = f"{package['name']} {package['version']}"
@@ -80,10 +91,10 @@ def main() -> None:
         )
         if not files and package["name"].startswith("ruff_"):
             vcs = json.loads((directory / ".cargo_vcs_info.json").read_text())
-            if vcs["git"]["sha1"] != RUFF_COMMIT:
-                raise RuntimeError(f"Refresh pinned upstream Ruff license for {label}")
-            text = (ROOT / "scripts/licenses/ruff-LICENSE").read_text()
-            notices.setdefault(text, []).append(f"{label}: upstream LICENSE ({RUFF_URL})")
+            commit = vcs["git"]["sha1"]
+            url = f"https://raw.githubusercontent.com/astral-sh/ruff/{commit}/LICENSE"
+            text = fetched_cache.setdefault(url, fetch_text(url))
+            notices.setdefault(text, []).append(f"{label}: upstream LICENSE ({url})")
         elif not files:
             raise RuntimeError(f"No license text found for {label}")
         for path in files:
@@ -91,15 +102,13 @@ def main() -> None:
             if not text.strip():
                 raise RuntimeError(f"Empty license file: {path}")
             notices.setdefault(text, []).append(f"{label}: {path.relative_to(directory)}")
-    add_runtime_notices(notices)
+    add_runtime_notices(notices, rust_ver)
     sections = [
         "THIRD-PARTY NOTICES FOR LEESH'S RUST EXECUTABLE\n"
         "\nGenerated by scripts/generate_notices.py from rust/Cargo.lock.\n"
         "Includes all resolved crates, including build-only and platform-specific dependencies.\n"
         "Identical license texts are grouped; original copyright/license texts are retained.\n"
-        "Nested notices include jemalloc and Unicode data licenses.\n"
-        "Runtime notices cover Rust 1.99.0 std, LLVM runtimes, and musl 1.2.4/1.2.5/1.2.6.\n"
-        "Pinned runtime origins and checksums: scripts/licenses/runtime-sources.json.\n"
+        f"Runtime notices cover Rust {rust_ver} std and musl {MUSL_VERSION}.\n"
         "This file supplements leesh's own MIT LICENSE.\n",
         "DEPENDENCY INDEX\n\n" + "\n".join(index),
     ]
